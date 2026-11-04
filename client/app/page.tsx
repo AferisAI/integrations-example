@@ -283,7 +283,11 @@ export default function Home() {
       .then(async (response) => {
         const body = await response.json().catch(() => null);
         if (response.ok) setPayerProfile(body as ApiObject);
-        else if (response.status !== 404) throw new Error(readError(body, "Não foi possível consultar o pagador."));
+        else if (response.status !== 404) {
+          throw new Error(response.status === 401 || response.status === 403
+            ? "O cadastro do pagador exige uma sessão própria Aferisai. Faça o cadastro na conta Aferisai e depois volte para gerar o PIX."
+            : readError(body, "Não foi possível consultar o pagador."));
+        }
       })
       .catch((reason) => setError(reason instanceof Error ? reason.message : "Falha ao consultar o pagador."));
   }, [quoteData, authState, payerProfile]);
@@ -559,7 +563,11 @@ export default function Home() {
         body: JSON.stringify({ name: payerName, document: payerDocument }),
       });
       const body = await response.json().catch(() => null);
-      if (!response.ok) throw new Error(readError(body, "Não foi possível cadastrar o pagador."));
+      if (!response.ok) {
+        throw new Error(response.status === 401 || response.status === 403
+          ? "A API não permite cadastrar o pagador com este OAuth delegado. Cadastre-o na sessão própria Aferisai e depois volte para gerar o PIX."
+          : readError(body, "Não foi possível cadastrar o pagador."));
+      }
       setPayerProfile(body as ApiObject);
       setPayerName("");
       setPayerDocument("");
