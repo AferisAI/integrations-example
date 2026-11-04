@@ -75,6 +75,16 @@ class RegistryApi:
             access_token,
         )
 
+    async def get_payer_profile(self, access_token: str) -> JSONResponse:
+        return await self._request("GET", "/v1/payments/payer-profile", access_token)
+
+    async def create_payer_profile(
+        self, access_token: str, payload: dict[str, Any]
+    ) -> JSONResponse:
+        return await self._request(
+            "POST", "/v1/payments/payer-profile", access_token, json=payload
+        )
+
     async def _request(
         self,
         method: str,

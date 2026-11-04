@@ -183,6 +183,10 @@ export default function Home() {
   const [quoteData, setQuoteData] = useState<ApiObject | null>(null);
   const [pixAttempted, setPixAttempted] = useState(false);
   const [pixData, setPixData] = useState<ApiObject | null>(null);
+  const [payerProfile, setPayerProfile] = useState<ApiObject | null>(null);
+  const [payerName, setPayerName] = useState("");
+  const [payerDocument, setPayerDocument] = useState("");
+  const [payerBusy, setPayerBusy] = useState(false);
   const [legalEvidence, setLegalEvidence] = useState<ApiObject | null>(null);
   const [legalLoading, setLegalLoading] = useState(false);
   const [legalConfirmed, setLegalConfirmed] = useState(false);
@@ -272,6 +276,17 @@ export default function Home() {
       active = false;
     };
   }, [quoteData, activeRequestId, legalEvidence]);
+
+  useEffect(() => {
+    if (!quoteData || authState !== "connected" || payerProfile) return;
+    fetch(`${apiUrl}/api/payer-profile`, { credentials: "include" })
+      .then(async (response) => {
+        const body = await response.json().catch(() => null);
+        if (response.ok) setPayerProfile(body as ApiObject);
+        else if (response.status !== 404) throw new Error(readError(body, "Não foi possível consultar o pagador."));
+      })
+      .catch((reason) => setError(reason instanceof Error ? reason.message : "Falha ao consultar o pagador."));
+  }, [quoteData, authState, payerProfile]);
 
   useEffect(() => {
     if (!directoryOpen) return;
@@ -490,6 +505,10 @@ export default function Home() {
 
   async function runPix() {
     if (!activeRequestId) return;
+    if (!payerProfile) {
+      setError("Cadastre o pagador desta conta antes de gerar o PIX.");
+      return;
+    }
     if (pixAttempted) {
       const response = await callPaymentApi("pix", "GET");
       if (response && response.status >= 200 && response.status < 300 && response.body && typeof response.body === "object") {
@@ -526,6 +545,29 @@ export default function Home() {
     if (response && response.status >= 200 && response.status < 300 && response.body && typeof response.body === "object") {
       setPixData(response.body as ApiObject);
       setNotice("PIX iniciado. Use o código ou QR para concluir o pagamento.");
+    }
+  }
+
+  async function savePayerProfile() {
+    setPayerBusy(true);
+    setError("");
+    try {
+      const response = await fetch(`${apiUrl}/api/payer-profile`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: payerName, document: payerDocument }),
+      });
+      const body = await response.json().catch(() => null);
+      if (!response.ok) throw new Error(readError(body, "Não foi possível cadastrar o pagador."));
+      setPayerProfile(body as ApiObject);
+      setPayerName("");
+      setPayerDocument("");
+      setNotice("Pagador cadastrado. Agora você pode gerar o PIX.");
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Falha ao cadastrar o pagador.");
+    } finally {
+      setPayerBusy(false);
     }
   }
 
@@ -958,6 +1000,28 @@ export default function Home() {
                       <div><strong>PIX</strong><small>QR Code e código copia e cola</small></div>
                       <span className="method-availability">Disponível</span>
                     </div>
+                    {!payerProfile ? (
+                      <div className="payer-profile-box">
+                        <div className="payment-card-heading">
+                          <span className="payment-number">A</span>
+                          <div><strong>Cadastro do pagador</strong><small>A API exige nome e CPF/CNPJ antes da primeira cobrança</small></div>
+                        </div>
+                        <label className="field">
+                          <span className="field-label">Nome civil</span>
+                          <input value={payerName} onChange={(event) => setPayerName(event.target.value)} placeholder="Nome completo" />
+                        </label>
+                        <label className="field">
+                          <span className="field-label">CPF ou CNPJ</span>
+                          <input value={payerDocument} onChange={(event) => setPayerDocument(event.target.value)} inputMode="numeric" placeholder="Somente números ou máscara" />
+                        </label>
+                        <button className="button button-secondary payment-button" type="button" onClick={() => void savePayerProfile()} disabled={payerBusy || !payerName.trim() || !payerDocument.trim()}>
+                          {payerBusy ? "Cadastrando…" : "Cadastrar pagador"}
+                        </button>
+                        <p className="payment-hint">O documento é enviado somente ao endpoint seguro da Aferisai e não é armazenado neste exemplo.</p>
+                      </div>
+                    ) : (
+                      <div className="payer-profile-ready"><span>✓</span> Pagador cadastrado para esta conta</div>
+                    )}
                     {!pixAttempted && (
                       <div className="legal-evidence">
                         <div className="legal-document-list">
@@ -994,7 +1058,7 @@ export default function Home() {
                       className="button payment-button"
                       type="button"
                       onClick={() => void runPix()}
-                      disabled={paymentBusy !== "" || authState !== "connected" || legalLoading || (!pixAttempted && (!legalConfirmed || !legalEvidence))}
+                      disabled={paymentBusy !== "" || authState !== "connected" || legalLoading || !payerProfile || (!pixAttempted && (!legalConfirmed || !legalEvidence))}
                     >
                       {paymentBusy === "pix" ? "Processando…" : pixAttempted ? "Consultar PIX existente" : "Gerar PIX"}
                     </button>
