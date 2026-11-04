@@ -63,7 +63,9 @@ O fluxo OAuth delegado usa os escopos `registry:preview`, `registry:quote` e `re
 
 Créditos, cartão de crédito e cartão de débito aparecem como indisponíveis nesta interface porque os endpoints correspondentes (`/v1/payments/...`) exigem o cookie de sessão própria `__Host-aferis_user`, além de Origin e CSRF. Eles não aceitam o Bearer OAuth delegado usado neste exemplo. Para habilitar esses meios, implemente separadamente o fluxo de sessão de usuário descrito pela API; não encaminhe o token delegado a esses endpoints.
 
-As rotas locais do proxy ficam em `/api/registry-requests/{id}/preview`, `/quote` e `/pix`. Prévia e intenção PIX são operações de tentativa única: após erro de rede ou resposta incerta, reconcilie com a consulta GET correspondente.
+As rotas locais do proxy ficam em `/api/registry-requests/{id}/preview`, `/quote` e `/pix`. Para uma cotação ou intenção PIX incerta, use a consulta GET correspondente. O OpenAPI atual não oferece GET de prévia para parceiros; não repita essa operação e siga o procedimento de conciliação da Aferisai.
+
+Para análise de complexidade, limitações do OAuth delegado e propostas de melhoria da API, consulte [sugestão para simplificar a integração de pagamentos](docs/sugestao-simplificacao-pagamentos.md).
 
 ## Organização e próximos passos
 
