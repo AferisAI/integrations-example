@@ -53,6 +53,18 @@ Abra `http://localhost:3000`, conecte a conta Aferisai e preencha os dados do pe
 
 Se a resposta do POST se perder, use **Reenviar tentativa**: o mesmo corpo e a mesma chave são reutilizados. Não altere a chave de um pedido já enviado. A interface mantém o retorno completo da API visível para facilitar a inclusão de novas funcionalidades.
 
+## Cotação e pagamento
+
+O fluxo OAuth delegado usa os escopos `registry:preview`, `registry:quote` e `registry:pay`:
+
+1. `POST /v1/partner/registry-requests/{id}/preview` consulta o custo no fornecedor. A API permite uma única prévia; a interface grava a tentativa no navegador e não repete o POST.
+2. `POST /v1/partner/registry-requests/{id}/quote` aprova a cotação. Se o resultado do POST for incerto, use `GET /v1/partner/registry-requests/{id}/quote` para consultar o estado atual.
+3. Para pagamento pelo fluxo delegado, a API disponibiliza PIX: `POST /v1/partner/registry-requests/{id}/pix`. O corpo requer `legal_policy_version` e os cinco documentos (`politica-de-privacidade`, `termos-de-servico`, `politica-de-cancelamento-e-reembolso`, `exclusao-de-dados`, `aviso-de-cookies`), cada um com versão e SHA-256 do texto efetivamente apresentado ao titular. A amostra solicita essa evidência no formulário; não inclui nem inventa os textos legais. Resultado incerto deve ser reconciliado com `GET /v1/partner/registry-requests/{id}/pix`, sem repetir o POST.
+
+Créditos, cartão de crédito e cartão de débito aparecem como indisponíveis nesta interface porque os endpoints correspondentes (`/v1/payments/...`) exigem o cookie de sessão própria `__Host-aferis_user`, além de Origin e CSRF. Eles não aceitam o Bearer OAuth delegado usado neste exemplo. Para habilitar esses meios, implemente separadamente o fluxo de sessão de usuário descrito pela API; não encaminhe o token delegado a esses endpoints.
+
+As rotas locais do proxy ficam em `/api/registry-requests/{id}/preview`, `/quote` e `/pix`. Prévia e intenção PIX são operações de tentativa única: após erro de rede ou resposta incerta, reconcilie com a consulta GET correspondente.
+
 ## Organização e próximos passos
 
 ```text

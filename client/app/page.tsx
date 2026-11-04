@@ -15,6 +15,7 @@ type PendingRequest = {
   idempotencyKey: string;
   payload: RequestPayload;
 };
+type PaymentAction = "preview" | "quote" | "pix";
 type RegistryOffice = {
   id: string;
   name: string;
@@ -34,6 +35,19 @@ const apiUrl = (process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000").repl
 const pendingStorageKey = "aferisai.pendingRegistryRequest";
 const lastRequestStorageKey = "aferisai.lastRegistryRequestId";
 const selectedOfficeStorageKey = "aferisai.selectedRegistryOffice";
+const legalDocumentNames = [
+  "politica-de-privacidade",
+  "termos-de-servico",
+  "politica-de-cancelamento-e-reembolso",
+  "exclusao-de-dados",
+  "aviso-de-cookies",
+];
+const legalEvidenceTemplate = JSON.stringify({
+  legal_policy_version: "",
+  documents: Object.fromEntries(
+    legalDocumentNames.map((name) => [name, { version: "", sha256: "" }]),
+  ),
+}, null, 2);
 const brazilianStates = [
   "AC", "AL", "AP", "AM", "BA", "CE", "DF", "ES", "GO", "MA", "MT", "MS",
   "MG", "PA", "PB", "PR", "PE", "PI", "RJ", "RN", "RS", "RO", "RR", "SC",
@@ -92,6 +106,65 @@ function responseStatus(body: unknown) {
   return "Aguardando atualização";
 }
 
+function paymentKey(action: PaymentAction, id: string) {
+  return `aferisai.payment.${action}.${id}`;
+}
+
+function storageValue(key: string) {
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function saveStorageValue(key: string, value: string) {
+  try {
+    localStorage.setItem(key, value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function removeStorageValue(key: string) {
+  try {
+    localStorage.removeItem(key);
+  } catch {
+    // The next action still depends on the in-memory attempt state.
+  }
+}
+
+function formatAmount(cents: unknown) {
+  if (typeof cents !== "number") return "Valor indisponível";
+  return new Intl.NumberFormat("pt-BR", {
+    style: "currency",
+    currency: "BRL",
+  }).format(cents / 100);
+}
+
+function isLegalEvidence(value: unknown) {
+  if (!value || typeof value !== "object") return false;
+  const evidence = value as ApiObject;
+  const documents = evidence.documents;
+  if (
+    typeof evidence.legal_policy_version !== "string" ||
+    !evidence.legal_policy_version.trim() ||
+    evidence.legal_policy_version.length > 32 ||
+    !documents || typeof documents !== "object" || Array.isArray(documents)
+  ) return false;
+  const entries = documents as ApiObject;
+  if (Object.keys(entries).length !== legalDocumentNames.length) return false;
+  return legalDocumentNames.every((name) => {
+    const document = entries[name];
+    if (!document || typeof document !== "object") return false;
+    const digest = document as ApiObject;
+    return typeof digest.version === "string" &&
+      /^[0-9A-Za-z][0-9A-Za-z.-]{0,31}$/.test(digest.version) &&
+      typeof digest.sha256 === "string" && /^[0-9a-f]{64}$/.test(digest.sha256);
+  });
+}
+
 export default function Home() {
   const [authState, setAuthState] = useState<AuthState>("checking");
   const [product, setProduct] = useState<Product>("visualizacao");
@@ -100,9 +173,20 @@ export default function Home() {
   const [addressContext, setAddressContext] = useState("");
   const [pending, setPending] = useState<PendingRequest | null>(null);
   const [operationId, setOperationId] = useState("");
+  const [activeRequestId, setActiveRequestId] = useState("");
   const [request, setRequest] = useState<unknown>(null);
   const [submitting, setSubmitting] = useState(false);
   const [loadingRequest, setLoadingRequest] = useState(false);
+  const [paymentBusy, setPaymentBusy] = useState<PaymentAction | "">("");
+  const [previewAttempted, setPreviewAttempted] = useState(false);
+  const [previewData, setPreviewData] = useState<unknown>(null);
+  const [quoteAttempted, setQuoteAttempted] = useState(false);
+  const [quoteData, setQuoteData] = useState<ApiObject | null>(null);
+  const [pixAttempted, setPixAttempted] = useState(false);
+  const [pixData, setPixData] = useState<ApiObject | null>(null);
+  const [legalEvidence, setLegalEvidence] = useState(legalEvidenceTemplate);
+  const [legalConfirmed, setLegalConfirmed] = useState(false);
+  const [pixCopied, setPixCopied] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
@@ -146,6 +230,24 @@ export default function Home() {
       active = false;
     };
   }, []);
+
+  useEffect(() => {
+    if (!activeRequestId) return;
+    setPreviewAttempted(storageValue(paymentKey("preview", activeRequestId)) === "1");
+    setQuoteAttempted(storageValue(paymentKey("quote", activeRequestId)) === "1");
+    setPixAttempted(storageValue(paymentKey("pix", activeRequestId)) === "1");
+    try {
+      const savedPreview = storageValue(`${paymentKey("preview", activeRequestId)}.result`);
+      setPreviewData(savedPreview ? JSON.parse(savedPreview) : null);
+    } catch {
+      setPreviewData(null);
+    }
+    setQuoteData(null);
+    setPixData(null);
+    setLegalEvidence(legalEvidenceTemplate);
+    setLegalConfirmed(false);
+    setPixCopied(false);
+  }, [activeRequestId]);
 
   useEffect(() => {
     if (!directoryOpen) return;
@@ -245,12 +347,121 @@ export default function Home() {
       }
       setRequest(body);
       setOperationId(normalizedId);
+      setActiveRequestId(normalizedId);
       localStorage.setItem(lastRequestStorageKey, normalizedId);
       setNotice("Pedido atualizado pela API.");
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Falha ao consultar o pedido.");
     } finally {
       setLoadingRequest(false);
+    }
+  }
+
+  async function callPaymentApi(action: PaymentAction, method: "GET" | "POST", payload?: unknown) {
+    if (!activeRequestId || authState !== "connected") {
+      setError("Conecte sua conta e consulte um pedido antes de continuar.");
+      return null;
+    }
+    setPaymentBusy(action);
+    setError("");
+    setNotice("");
+    try {
+      const response = await fetch(
+        `${apiUrl}/api/registry-requests/${encodeURIComponent(activeRequestId)}/${action}`,
+        {
+          method,
+          credentials: "include",
+          ...(method === "POST"
+            ? { headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload ?? {}) }
+            : {}),
+        },
+      );
+      const body = await response.json().catch(() => null);
+      if (!response.ok) {
+        if (response.status === 401) setAuthState("disconnected");
+        if (method === "POST" && [401, 422].includes(response.status)) {
+          removeStorageValue(paymentKey(action, activeRequestId));
+          if (action === "preview") setPreviewAttempted(false);
+          if (action === "quote") setQuoteAttempted(false);
+          if (action === "pix") setPixAttempted(false);
+        }
+        throw new Error(readError(body, "Não foi possível continuar o fluxo de pagamento."));
+      }
+      return body;
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Falha ao consultar o pagamento.");
+      return null;
+    } finally {
+      setPaymentBusy("");
+    }
+  }
+
+  async function runPreview() {
+    if (!activeRequestId || previewAttempted) return;
+    if (!saveStorageValue(paymentKey("preview", activeRequestId), "1")) {
+      setError("Ative o armazenamento local antes de iniciar uma prévia de tentativa única.");
+      return;
+    }
+    setPreviewAttempted(true);
+    const result = await callPaymentApi("preview", "POST");
+    if (result) {
+      setPreviewData(result);
+      saveStorageValue(`${paymentKey("preview", activeRequestId)}.result`, JSON.stringify(result));
+      setNotice("Prévia registrada. Revise o resultado antes de solicitar a cotação.");
+    }
+  }
+
+  async function runQuote() {
+    if (!activeRequestId) return;
+    const reconcile = quoteAttempted;
+    if (!reconcile) {
+      if (!saveStorageValue(paymentKey("quote", activeRequestId), "1")) {
+        setError("Ative o armazenamento local antes de solicitar a cotação.");
+        return;
+      }
+      setQuoteAttempted(true);
+    }
+    const result = await callPaymentApi("quote", reconcile ? "GET" : "POST", {});
+    if (result && typeof result === "object") {
+      setQuoteData(result as ApiObject);
+      setNotice(reconcile ? "Cotação atualizada pela API." : "Cotação aprovada pela API.");
+    }
+  }
+
+  async function runPix() {
+    if (!activeRequestId) return;
+    if (pixAttempted) {
+      const result = await callPaymentApi("pix", "GET");
+      if (result && typeof result === "object") {
+        setPixData(result as ApiObject);
+        setNotice("Intenção PIX consultada pela API.");
+      }
+      return;
+    }
+    if (!legalConfirmed) {
+      setError("Confirme que o titular recebeu e leu os documentos legais correspondentes aos hashes enviados.");
+      return;
+    }
+    let evidence: unknown;
+    try {
+      evidence = JSON.parse(legalEvidence);
+    } catch {
+      setError("Informe a evidência legal no formato JSON exigido pela API.");
+      return;
+    }
+    if (!isLegalEvidence(evidence)) {
+      setError("Preencha a versão do conjunto legal e os cinco pares versão/SHA-256 válidos antes do envio.");
+      return;
+    }
+    if (!saveStorageValue(paymentKey("pix", activeRequestId), "1")) {
+      setError("Ative o armazenamento local antes de iniciar uma cobrança PIX.");
+      return;
+    }
+    setPixAttempted(true);
+    const result = await callPaymentApi("pix", "POST", evidence);
+    if (result && typeof result === "object") {
+      setPixData(result as ApiObject);
+      setNotice("PIX iniciado. Use o código ou QR para concluir o pagamento.");
     }
   }
 
@@ -587,12 +798,12 @@ export default function Home() {
                 </div>
                 <div className="result-id-block">
                   <span className="result-label">IDENTIFICADOR</span>
-                  <code>{operationId}</code>
+                  <code>{activeRequestId}</code>
                 </div>
                 <button
                   className="refresh-link"
                   type="button"
-                  onClick={() => void loadRequest()}
+                  onClick={() => void loadRequest(activeRequestId)}
                   disabled={loadingRequest}
                 >
                   <span aria-hidden="true">⟳</span> Atualizar status
@@ -608,6 +819,149 @@ export default function Home() {
                 <strong>Nenhum pedido consultado</strong>
                 <p>Após criar um pedido, os detalhes e o status técnico aparecem aqui.</p>
               </div>
+            )}
+
+            {request && (
+              <section className="payment-flow" aria-labelledby="payment-title">
+                <div className="payment-heading">
+                  <div>
+                    <span className="result-label">PRÓXIMA ETAPA</span>
+                    <h3 id="payment-title">Cotação e pagamento</h3>
+                    <p>Consulte o custo e aprove a cotação antes de iniciar o pagamento.</p>
+                  </div>
+                  <span className="payment-step">02</span>
+                </div>
+
+                <div className="payment-step-card">
+                  <div className="payment-card-heading">
+                    <span className="payment-number">1</span>
+                    <div><strong>Prévia de custo</strong><small>Uma única consulta ao fornecedor</small></div>
+                  </div>
+                  <button
+                    className="button button-secondary payment-button"
+                    type="button"
+                    onClick={() => void runPreview()}
+                    disabled={paymentBusy !== "" || previewAttempted || authState !== "connected"}
+                  >
+                    {paymentBusy === "preview" ? "Consultando…" : previewAttempted ? "Prévia enviada" : "Consultar custo"}
+                  </button>
+                  {previewAttempted && !previewData && (
+                    <p className="payment-hint">A tentativa já foi enviada. Consulte o pedido antes de decidir o próximo passo; não repita a prévia.</p>
+                  )}
+                  {previewData && (
+                    <details className="response-details payment-response" open>
+                      <summary>Resultado da prévia</summary>
+                      <pre>{JSON.stringify(previewData, null, 2)}</pre>
+                    </details>
+                  )}
+                </div>
+
+                {previewAttempted && (
+                  <div className="payment-step-card">
+                    <div className="payment-card-heading">
+                      <span className="payment-number">2</span>
+                      <div><strong>Cotação aprovada</strong><small>Revise o valor e a validade antes de pagar</small></div>
+                    </div>
+                    <button
+                      className="button button-secondary payment-button"
+                      type="button"
+                      onClick={() => void runQuote()}
+                      disabled={paymentBusy !== "" || authState !== "connected"}
+                    >
+                      {paymentBusy === "quote" ? "Consultando…" : quoteAttempted ? "Consultar cotação" : "Solicitar cotação"}
+                    </button>
+                    {quoteData && (
+                      <div className="quote-summary">
+                        <span className="result-label">VALOR DA COTAÇÃO</span>
+                        <strong>{formatAmount(quoteData.payable_cents)}</strong>
+                        <small>Status: {String(quoteData.status ?? "—")} · válida até {String(quoteData.expires_at ?? "—")}</small>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {quoteData && (
+                  <div className="payment-step-card payment-methods">
+                    <div className="payment-card-heading">
+                      <span className="payment-number">3</span>
+                      <div><strong>Forma de pagamento</strong><small>Disponibilidade conforme OAuth delegado</small></div>
+                    </div>
+                    <div className="payment-method-row selected">
+                      <span className="method-icon pix-icon">P</span>
+                      <div><strong>PIX</strong><small>QR Code e código copia e cola</small></div>
+                      <span className="method-availability">Disponível</span>
+                    </div>
+                    {!pixAttempted && (
+                      <div className="legal-evidence">
+                        <label className="field">
+                          <span className="field-label">Evidência dos documentos legais</span>
+                          <textarea
+                            value={legalEvidence}
+                            onChange={(event) => setLegalEvidence(event.target.value)}
+                            rows={5}
+                          />
+                          <span className="field-hint">Preencha as versões e os hashes dos cinco textos oficiais efetivamente apresentados ao titular. Este exemplo não embute esses documentos.</span>
+                        </label>
+                        <label className="legal-confirmation">
+                          <input
+                            type="checkbox"
+                            checked={legalConfirmed}
+                            onChange={(event) => setLegalConfirmed(event.target.checked)}
+                          />
+                          <span>Confirmo que o titular recebeu e leu os documentos oficiais correspondentes a esta evidência.</span>
+                        </label>
+                      </div>
+                    )}
+                    <button
+                      className="button payment-button"
+                      type="button"
+                      onClick={() => void runPix()}
+                      disabled={paymentBusy !== "" || authState !== "connected" || (!pixAttempted && !legalConfirmed)}
+                    >
+                      {paymentBusy === "pix" ? "Processando…" : pixAttempted ? "Consultar PIX existente" : "Gerar PIX"}
+                    </button>
+                    {pixData && (
+                      <div className="pix-result">
+                        <div className="quote-summary">
+                          <span className="result-label">VALOR DO PIX</span>
+                          <strong>{formatAmount(pixData.amount_cents)}</strong>
+                          <small>Vencimento: {String(pixData.due_date ?? "—")}</small>
+                        </div>
+                        {typeof pixData.qr_image_base64 === "string" && (
+                          <img className="pix-qr" src={`data:image/png;base64,${pixData.qr_image_base64}`} alt="QR Code de pagamento PIX" />
+                        )}
+                        {typeof pixData.pix_payload === "string" && (
+                          <div className="field">
+                            <span className="field-label">PIX copia e cola</span>
+                            <textarea value={pixData.pix_payload} readOnly rows={3} />
+                            <button
+                              type="button"
+                              className="refresh-link"
+                              onClick={() => {
+                                void navigator.clipboard.writeText(String(pixData.pix_payload));
+                                setPixCopied(true);
+                              }}
+                            >
+                              {pixCopied ? "Código copiado" : "Copiar código PIX"}
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                    <div className="payment-method-row unavailable">
+                      <span className="method-icon">C</span>
+                      <div><strong>Créditos Aferisai</strong><small>Requer sessão própria de usuário</small></div>
+                      <span className="method-availability">Indisponível</span>
+                    </div>
+                    <div className="payment-method-row unavailable">
+                      <span className="method-icon">▣</span>
+                      <div><strong>Cartão de crédito ou débito</strong><small>Requer sessão própria de usuário</small></div>
+                      <span className="method-availability">Indisponível</span>
+                    </div>
+                    <p className="payment-hint">A API de parceiro aceita PIX com Bearer delegado. Créditos e cartão usam cookie de sessão Aferisai; não envie o token OAuth a essas rotas.</p>
+                  </div>
+                )}
+              </section>
             )}
 
             <div className="api-note">

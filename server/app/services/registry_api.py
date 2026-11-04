@@ -34,6 +34,47 @@ class RegistryApi:
             access_token,
         )
 
+    async def preview(self, access_token: str, operation_id: str) -> JSONResponse:
+        return await self._request(
+            "POST",
+            f"/v1/partner/registry-requests/{operation_id}/preview",
+            access_token,
+        )
+
+    async def quote(
+        self, access_token: str, operation_id: str, payload: dict[str, Any] | None = None
+    ) -> JSONResponse:
+        return await self._request(
+            "POST",
+            f"/v1/partner/registry-requests/{operation_id}/quote",
+            access_token,
+            json=payload or {},
+        )
+
+    async def get_quote(self, access_token: str, operation_id: str) -> JSONResponse:
+        return await self._request(
+            "GET",
+            f"/v1/partner/registry-requests/{operation_id}/quote",
+            access_token,
+        )
+
+    async def create_pix(
+        self, access_token: str, operation_id: str, payload: dict[str, Any]
+    ) -> JSONResponse:
+        return await self._request(
+            "POST",
+            f"/v1/partner/registry-requests/{operation_id}/pix",
+            access_token,
+            json=payload,
+        )
+
+    async def get_pix(self, access_token: str, operation_id: str) -> JSONResponse:
+        return await self._request(
+            "GET",
+            f"/v1/partner/registry-requests/{operation_id}/pix",
+            access_token,
+        )
+
     async def _request(
         self,
         method: str,
