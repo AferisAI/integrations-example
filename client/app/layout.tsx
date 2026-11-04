@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Aferisai OAuth",
-  description: "Exemplo de integração OAuth com Aferisai",
+  title: "Pedidos registrais | Aferisai",
+  description: "Exemplo de criação e acompanhamento de pedidos registrais Aferisai",
 };
 
 export default function RootLayout({
