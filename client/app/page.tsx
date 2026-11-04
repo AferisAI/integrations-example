@@ -28,6 +28,10 @@ type RegistryOffice = {
   product_history?: { product: string; availability: string; seen_count: number }[];
 };
 type ApiObject = Record<string, unknown>;
+type LegalEvidence = {
+  legal_policy_version: string;
+  documents: Record<string, { version: string; sha256: string; url?: string }>;
+};
 
 const apiUrl = (process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000").replace(
   /\/$/,
@@ -138,7 +142,7 @@ function formatAmount(cents: unknown) {
   }).format(cents / 100);
 }
 
-function isLegalEvidence(value: unknown) {
+function isLegalEvidence(value: unknown): value is LegalEvidence {
   if (!value || typeof value !== "object") return false;
   const evidence = value as ApiObject;
   const documents = evidence.documents;
@@ -503,12 +507,12 @@ export default function Home() {
       setError("Os documentos legais oficiais ainda não foram carregados.");
       return;
     }
-    const sourceDocuments = sourceEvidence.documents as ApiObject;
+  const sourceDocuments = sourceEvidence.documents;
     const evidence = {
       legal_policy_version: sourceEvidence.legal_policy_version,
       documents: Object.fromEntries(
         legalDocumentNames.map((name) => {
-          const digest = sourceDocuments[name] as ApiObject;
+          const digest = sourceDocuments[name];
           return [name, { version: digest.version, sha256: digest.sha256 }];
         }),
       ),
@@ -881,7 +885,7 @@ export default function Home() {
               </div>
             )}
 
-            {request && (
+            {request !== null && (
               <section className="payment-flow" aria-labelledby="payment-title">
                 <div className="payment-heading">
                   <div>
@@ -908,7 +912,7 @@ export default function Home() {
                   {previewAttempted && !previewData && (
                     <p className="payment-hint">A tentativa já foi enviada. Consulte o pedido antes de decidir o próximo passo; não repita a prévia.</p>
                   )}
-                  {previewData && (
+                  {previewData !== null && (
                     <details className="response-details payment-response" open>
                       <summary>Resultado da prévia</summary>
                       <pre>{JSON.stringify(previewData, null, 2)}</pre>
