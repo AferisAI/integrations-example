@@ -279,23 +279,33 @@ export default function Home() {
   }, [quoteData, activeRequestId, legalEvidence]);
 
   useEffect(() => {
-    if (!quoteData || authState !== "connected" || payerProfile) return;
+    if (authState !== "connected") {
+      setPayerProfile(null);
+      setPayerCsrf("");
+      return;
+    }
+    let active = true;
     fetch(`${apiUrl}/api/payer-profile`, { credentials: "include" })
       .then(async (response) => {
         const body = await response.json().catch(() => null);
-        if (response.ok) setPayerProfile(body as ApiObject);
+        if (response.ok && active) setPayerProfile(body as ApiObject);
         else if (response.status === 404) {
           const csrfResponse = await fetch(`${apiUrl}/api/payer-profile/csrf`, { method: "POST", credentials: "include" });
           const csrfBody = await csrfResponse.json().catch(() => null);
-          if (csrfResponse.ok && csrfBody && typeof csrfBody.csrf_token === "string") setPayerCsrf(csrfBody.csrf_token);
+          if (active && csrfResponse.ok && csrfBody && typeof csrfBody.csrf_token === "string") setPayerCsrf(csrfBody.csrf_token);
         } else {
           throw new Error(response.status === 401 || response.status === 403
             ? "O cadastro do pagador exige uma sessão própria Aferisai. Faça o cadastro na conta Aferisai e depois volte para gerar o PIX."
             : readError(body, "Não foi possível consultar o pagador."));
         }
       })
-      .catch((reason) => setError(reason instanceof Error ? reason.message : "Falha ao consultar o pagador."));
-  }, [quoteData, authState, payerProfile]);
+      .catch((reason) => {
+        if (active) setError(reason instanceof Error ? reason.message : "Falha ao consultar o pagador.");
+      });
+    return () => {
+      active = false;
+    };
+  }, [authState]);
 
   useEffect(() => {
     if (!directoryOpen) return;
@@ -1033,7 +1043,7 @@ export default function Home() {
                         <button className="button button-secondary payment-button" type="button" onClick={() => void savePayerProfile()} disabled={payerBusy || !payerName.trim() || !payerDocument.trim()}>
                           {payerBusy ? "Cadastrando…" : "Cadastrar pagador"}
                         </button>
-                        <p className="payment-hint">O documento é enviado somente ao endpoint seguro da Aferisai e não é armazenado neste exemplo.</p>
+                        <p className="payment-hint">O cadastro fica vinculado à conta Aferisai. Depois desta etapa, outros pedidos usam o mesmo pagador e não pedem os dados novamente.</p>
                       </div>
                     ) : (
                       <div className="payer-profile-ready"><span>✓</span> Pagador cadastrado para esta conta</div>
