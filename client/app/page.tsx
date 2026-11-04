@@ -413,38 +413,55 @@ export default function Home() {
     }
   }
 
+  function isQuoteNotFound(response: PaymentApiResult | null) {
+    const body = response?.body;
+    if (response?.status !== 404 || !body || typeof body !== "object") return false;
+    return (body as ApiObject).code === "pricing_registry_quote_not_found";
+  }
+
+  function showQuote(response: PaymentApiResult, reconciled: boolean) {
+    if (response.status < 200 || response.status >= 300 || !response.body || typeof response.body !== "object") {
+      return false;
+    }
+    setQuoteData(response.body as ApiObject);
+    setNotice(reconciled ? "Cotação atualizada pela API." : "Cotação aprovada pela API.");
+    return true;
+  }
+
+  async function submitQuote() {
+    if (!activeRequestId) return;
+    if (!saveStorageValue(paymentKey("quote", activeRequestId), "1")) {
+      setError("Ative o armazenamento local antes de solicitar a cotação.");
+      return;
+    }
+    setQuoteAttempted(true);
+    setQuoteData(null);
+    const created = await callPaymentApi("quote", "POST", {});
+    if (created && showQuote(created, false)) return;
+    if (!isQuoteNotFound(created)) return;
+
+    const current = await callPaymentApi("quote", "GET");
+    if (current && showQuote(current, true)) return;
+    if (isQuoteNotFound(current)) {
+      removeStorageValue(paymentKey("quote", activeRequestId));
+      setQuoteAttempted(false);
+      setQuoteData(null);
+      setError("");
+      setNotice("A API confirmou que não há cotação registrada. A tentativa foi reconciliada; você pode solicitar novamente.");
+    }
+  }
+
   async function runQuote() {
     if (!activeRequestId) return;
-    const reconcile = quoteAttempted;
-    if (!reconcile && !previewData) {
-      setError("A API precisa confirmar a prévia antes de aprovar uma cotação.");
+    if (!quoteAttempted) {
+      await submitQuote();
       return;
     }
-    if (!reconcile) {
-      if (!saveStorageValue(paymentKey("quote", activeRequestId), "1")) {
-        setError("Ative o armazenamento local antes de solicitar a cotação.");
-        return;
-      }
-      setQuoteAttempted(true);
-    }
-    const response = await callPaymentApi("quote", reconcile ? "GET" : "POST", {});
-    const body = response?.body;
-    const code = body && typeof body === "object" ? (body as ApiObject).code : undefined;
-    if (reconcile && response?.status === 404 && code === "pricing_registry_quote_not_found") {
-      if (previewData) {
-        removeStorageValue(paymentKey("quote", activeRequestId));
-        setQuoteAttempted(false);
-        setQuoteData(null);
-        setError("");
-        setNotice("A API confirmou que não há cotação. Como a prévia foi confirmada, você pode solicitar uma cotação agora.");
-      } else {
-        setError("A API não encontrou uma cotação e esta sessão não tem uma prévia confirmada. Atualize o pedido para reconciliar a tentativa antes de continuar.");
-      }
-      return;
-    }
-    if (response && response.status >= 200 && response.status < 300 && body && typeof body === "object") {
-      setQuoteData(body as ApiObject);
-      setNotice(reconcile ? "Cotação atualizada pela API." : "Cotação aprovada pela API.");
+    const current = await callPaymentApi("quote", "GET");
+    if (current && showQuote(current, true)) return;
+    if (isQuoteNotFound(current)) {
+      setQuoteData(null);
+      await submitQuote();
     }
   }
 
@@ -876,11 +893,11 @@ export default function Home() {
                   )}
                 </div>
 
-                {(previewData || quoteAttempted) && (
+                {(previewAttempted || quoteAttempted) && (
                   <div className="payment-step-card">
                     <div className="payment-card-heading">
                       <span className="payment-number">2</span>
-                      <div><strong>Cotar pedido</strong><small>A API valida as condições e retorna preço e validade</small></div>
+                      <div><strong>Cotar pedido</strong><small>A API valida a prévia e retorna preço e validade</small></div>
                     </div>
                     <button
                       className="button button-secondary payment-button"
@@ -896,6 +913,9 @@ export default function Home() {
                         <strong>{formatAmount(quoteData.payable_cents)}</strong>
                         <small>Status: {String(quoteData.status ?? "—")} · válida até {String(quoteData.expires_at ?? "—")}</small>
                       </div>
+                    )}
+                    {previewAttempted && !previewData && (
+                      <p className="payment-hint">A resposta da prévia não está disponível nesta sessão. A API valida se ela foi confirmada antes de aprovar a cotação.</p>
                     )}
                   </div>
                 )}
