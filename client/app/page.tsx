@@ -16,6 +16,7 @@ type PendingRequest = {
   payload: RequestPayload;
 };
 type PaymentAction = "preview" | "quote" | "pix";
+type PaymentApiResult = { status: number; body: unknown };
 type RegistryOffice = {
   id: string;
   name: string;
@@ -385,9 +386,10 @@ export default function Home() {
           if (action === "quote") setQuoteAttempted(false);
           if (action === "pix") setPixAttempted(false);
         }
-        throw new Error(readError(body, "Não foi possível continuar o fluxo de pagamento."));
+        setError(readError(body, "Não foi possível continuar o fluxo de pagamento."));
+        return { status: response.status, body } satisfies PaymentApiResult;
       }
-      return body;
+      return { status: response.status, body } satisfies PaymentApiResult;
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Falha ao consultar o pagamento.");
       return null;
@@ -403,10 +405,10 @@ export default function Home() {
       return;
     }
     setPreviewAttempted(true);
-    const result = await callPaymentApi("preview", "POST");
-    if (result) {
-      setPreviewData(result);
-      saveStorageValue(`${paymentKey("preview", activeRequestId)}.result`, JSON.stringify(result));
+    const response = await callPaymentApi("preview", "POST");
+    if (response && response.status >= 200 && response.status < 300) {
+      setPreviewData(response.body);
+      saveStorageValue(`${paymentKey("preview", activeRequestId)}.result`, JSON.stringify(response.body));
       setNotice("Prévia registrada. Revise o resultado antes de solicitar a cotação.");
     }
   }
@@ -414,6 +416,10 @@ export default function Home() {
   async function runQuote() {
     if (!activeRequestId) return;
     const reconcile = quoteAttempted;
+    if (!reconcile && !previewData) {
+      setError("A API precisa confirmar a prévia antes de aprovar uma cotação.");
+      return;
+    }
     if (!reconcile) {
       if (!saveStorageValue(paymentKey("quote", activeRequestId), "1")) {
         setError("Ative o armazenamento local antes de solicitar a cotação.");
@@ -421,9 +427,23 @@ export default function Home() {
       }
       setQuoteAttempted(true);
     }
-    const result = await callPaymentApi("quote", reconcile ? "GET" : "POST", {});
-    if (result && typeof result === "object") {
-      setQuoteData(result as ApiObject);
+    const response = await callPaymentApi("quote", reconcile ? "GET" : "POST", {});
+    const body = response?.body;
+    const code = body && typeof body === "object" ? (body as ApiObject).code : undefined;
+    if (reconcile && response?.status === 404 && code === "pricing_registry_quote_not_found") {
+      if (previewData) {
+        removeStorageValue(paymentKey("quote", activeRequestId));
+        setQuoteAttempted(false);
+        setQuoteData(null);
+        setError("");
+        setNotice("A API confirmou que não há cotação. Como a prévia foi confirmada, você pode solicitar uma cotação agora.");
+      } else {
+        setError("A API não encontrou uma cotação e esta sessão não tem uma prévia confirmada. Atualize o pedido para reconciliar a tentativa antes de continuar.");
+      }
+      return;
+    }
+    if (response && response.status >= 200 && response.status < 300 && body && typeof body === "object") {
+      setQuoteData(body as ApiObject);
       setNotice(reconcile ? "Cotação atualizada pela API." : "Cotação aprovada pela API.");
     }
   }
@@ -431,9 +451,9 @@ export default function Home() {
   async function runPix() {
     if (!activeRequestId) return;
     if (pixAttempted) {
-      const result = await callPaymentApi("pix", "GET");
-      if (result && typeof result === "object") {
-        setPixData(result as ApiObject);
+      const response = await callPaymentApi("pix", "GET");
+      if (response && response.status >= 200 && response.status < 300 && response.body && typeof response.body === "object") {
+        setPixData(response.body as ApiObject);
         setNotice("Intenção PIX consultada pela API.");
       }
       return;
@@ -458,9 +478,9 @@ export default function Home() {
       return;
     }
     setPixAttempted(true);
-    const result = await callPaymentApi("pix", "POST", evidence);
-    if (result && typeof result === "object") {
-      setPixData(result as ApiObject);
+    const response = await callPaymentApi("pix", "POST", evidence);
+    if (response && response.status >= 200 && response.status < 300 && response.body && typeof response.body === "object") {
+      setPixData(response.body as ApiObject);
       setNotice("PIX iniciado. Use o código ou QR para concluir o pagamento.");
     }
   }
@@ -856,19 +876,19 @@ export default function Home() {
                   )}
                 </div>
 
-                {previewAttempted && (
+                {(previewData || quoteAttempted) && (
                   <div className="payment-step-card">
                     <div className="payment-card-heading">
                       <span className="payment-number">2</span>
-                      <div><strong>Cotação aprovada</strong><small>Revise o valor e a validade antes de pagar</small></div>
+                      <div><strong>Cotar pedido</strong><small>A API valida as condições e retorna preço e validade</small></div>
                     </div>
                     <button
                       className="button button-secondary payment-button"
                       type="button"
                       onClick={() => void runQuote()}
-                      disabled={paymentBusy !== "" || authState !== "connected"}
+                      disabled={paymentBusy !== "" || authState !== "connected" || (!quoteAttempted && !previewData)}
                     >
-                      {paymentBusy === "quote" ? "Consultando…" : quoteAttempted ? "Consultar cotação" : "Solicitar cotação"}
+                      {paymentBusy === "quote" ? "Consultando…" : quoteAttempted ? "Consultar cotação" : previewData ? "Solicitar cotação" : "Aguardando prévia"}
                     </button>
                     {quoteData && (
                       <div className="quote-summary">
