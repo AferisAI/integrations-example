@@ -90,6 +90,11 @@ class RegistryApi:
             headers=headers or {}, json=payload
         )
 
+    async def renew_user_csrf(self, headers: dict[str, str]) -> JSONResponse:
+        return await self._request(
+            "POST", "/v1/users/sessions/current/csrf", headers=headers
+        )
+
     async def _request(
         self,
         method: str,

@@ -17,6 +17,7 @@ class Settings:
     session_secret: str = os.getenv("SESSION_SECRET", "change-this-local-development-secret")
     cookie_secure: bool = _as_bool(os.getenv("COOKIE_SECURE", "false"))
     aferis_api_url: str = os.getenv("AFERIS_API_URL", "https://api.aferis.ai").rstrip("/")
+    aferis_user_origin: str = os.getenv("AFERIS_USER_ORIGIN", "https://aferis.ai").rstrip("/")
     oauth_client_id: str = os.getenv("OAUTH_CLIENT_ID", "")
     oauth_client_secret: str = os.getenv("OAUTH_CLIENT_SECRET", "")
     oauth_authorize_url: str = os.getenv("OAUTH_AUTHORIZE_URL", "")

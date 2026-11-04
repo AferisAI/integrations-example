@@ -186,6 +186,7 @@ export default function Home() {
   const [payerProfile, setPayerProfile] = useState<ApiObject | null>(null);
   const [payerName, setPayerName] = useState("");
   const [payerDocument, setPayerDocument] = useState("");
+  const [payerCsrf, setPayerCsrf] = useState("");
   const [payerBusy, setPayerBusy] = useState(false);
   const [legalEvidence, setLegalEvidence] = useState<ApiObject | null>(null);
   const [legalLoading, setLegalLoading] = useState(false);
@@ -283,7 +284,11 @@ export default function Home() {
       .then(async (response) => {
         const body = await response.json().catch(() => null);
         if (response.ok) setPayerProfile(body as ApiObject);
-        else if (response.status !== 404) {
+        else if (response.status === 404) {
+          const csrfResponse = await fetch(`${apiUrl}/api/payer-profile/csrf`, { method: "POST", credentials: "include" });
+          const csrfBody = await csrfResponse.json().catch(() => null);
+          if (csrfResponse.ok && csrfBody && typeof csrfBody.csrf_token === "string") setPayerCsrf(csrfBody.csrf_token);
+        } else {
           throw new Error(response.status === 401 || response.status === 403
             ? "O cadastro do pagador exige uma sessão própria Aferisai. Faça o cadastro na conta Aferisai e depois volte para gerar o PIX."
             : readError(body, "Não foi possível consultar o pagador."));
@@ -559,7 +564,10 @@ export default function Home() {
       const response = await fetch(`${apiUrl}/api/payer-profile`, {
         method: "POST",
         credentials: "include",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          ...(payerCsrf ? { "X-CSRF-Token": payerCsrf } : {}),
+        },
         body: JSON.stringify({ name: payerName, document: payerDocument }),
       });
       const body = await response.json().catch(() => null);
