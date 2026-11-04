@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 
 from app.api.auth import router as auth_router
+from app.api.legal_documents import router as legal_documents_router
 from app.api.registry_offices import router as registry_offices_router
 from app.api.registry_requests import router as registry_requests_router
 from app.core.settings import settings
@@ -23,6 +24,7 @@ app.add_middleware(
     expose_headers=["Location", "Retry-After"],
 )
 app.include_router(auth_router)
+app.include_router(legal_documents_router)
 app.include_router(registry_offices_router)
 app.include_router(registry_requests_router)
 

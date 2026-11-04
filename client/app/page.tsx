@@ -43,12 +43,6 @@ const legalDocumentNames = [
   "exclusao-de-dados",
   "aviso-de-cookies",
 ];
-const legalEvidenceTemplate = JSON.stringify({
-  legal_policy_version: "",
-  documents: Object.fromEntries(
-    legalDocumentNames.map((name) => [name, { version: "", sha256: "" }]),
-  ),
-}, null, 2);
 const brazilianStates = [
   "AC", "AL", "AP", "AM", "BA", "CE", "DF", "ES", "GO", "MA", "MT", "MS",
   "MG", "PA", "PB", "PR", "PE", "PI", "RJ", "RN", "RS", "RO", "RR", "SC",
@@ -185,7 +179,8 @@ export default function Home() {
   const [quoteData, setQuoteData] = useState<ApiObject | null>(null);
   const [pixAttempted, setPixAttempted] = useState(false);
   const [pixData, setPixData] = useState<ApiObject | null>(null);
-  const [legalEvidence, setLegalEvidence] = useState(legalEvidenceTemplate);
+  const [legalEvidence, setLegalEvidence] = useState<ApiObject | null>(null);
+  const [legalLoading, setLegalLoading] = useState(false);
   const [legalConfirmed, setLegalConfirmed] = useState(false);
   const [pixCopied, setPixCopied] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
@@ -245,10 +240,34 @@ export default function Home() {
     }
     setQuoteData(null);
     setPixData(null);
-    setLegalEvidence(legalEvidenceTemplate);
+    setLegalEvidence(null);
     setLegalConfirmed(false);
     setPixCopied(false);
   }, [activeRequestId]);
+
+  useEffect(() => {
+    if (!quoteData || !activeRequestId || legalEvidence) return;
+    let active = true;
+    setLegalLoading(true);
+    fetch(`${apiUrl}/api/legal-documents`)
+      .then(async (response) => {
+        const body = await response.json().catch(() => null);
+        if (!response.ok) throw new Error(readError(body, "Não foi possível carregar os documentos legais oficiais."));
+        return body;
+      })
+      .then((body) => {
+        if (active && body && typeof body === "object") setLegalEvidence(body as ApiObject);
+      })
+      .catch((reason) => {
+        if (active) setError(reason instanceof Error ? reason.message : "Falha ao carregar os documentos legais.");
+      })
+      .finally(() => {
+        if (active) setLegalLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [quoteData, activeRequestId, legalEvidence]);
 
   useEffect(() => {
     if (!directoryOpen) return;
@@ -479,17 +498,21 @@ export default function Home() {
       setError("Confirme que o titular recebeu e leu os documentos legais correspondentes aos hashes enviados.");
       return;
     }
-    let evidence: unknown;
-    try {
-      evidence = JSON.parse(legalEvidence);
-    } catch {
-      setError("Informe a evidência legal no formato JSON exigido pela API.");
+    const sourceEvidence = legalEvidence;
+    if (!isLegalEvidence(sourceEvidence)) {
+      setError("Os documentos legais oficiais ainda não foram carregados.");
       return;
     }
-    if (!isLegalEvidence(evidence)) {
-      setError("Preencha a versão do conjunto legal e os cinco pares versão/SHA-256 válidos antes do envio.");
-      return;
-    }
+    const sourceDocuments = sourceEvidence.documents as ApiObject;
+    const evidence = {
+      legal_policy_version: sourceEvidence.legal_policy_version,
+      documents: Object.fromEntries(
+        legalDocumentNames.map((name) => {
+          const digest = sourceDocuments[name] as ApiObject;
+          return [name, { version: digest.version, sha256: digest.sha256 }];
+        }),
+      ),
+    };
     if (!saveStorageValue(paymentKey("pix", activeRequestId), "1")) {
       setError("Ative o armazenamento local antes de iniciar uma cobrança PIX.");
       return;
@@ -933,15 +956,26 @@ export default function Home() {
                     </div>
                     {!pixAttempted && (
                       <div className="legal-evidence">
-                        <label className="field">
-                          <span className="field-label">Evidência dos documentos legais</span>
-                          <textarea
-                            value={legalEvidence}
-                            onChange={(event) => setLegalEvidence(event.target.value)}
-                            rows={5}
-                          />
-                          <span className="field-hint">Preencha as versões e os hashes dos cinco textos oficiais efetivamente apresentados ao titular. Este exemplo não embute esses documentos.</span>
-                        </label>
+                        <div className="legal-document-list">
+                          <span className="field-label">Documentos legais oficiais</span>
+                          {legalLoading && <span className="field-hint">Carregando documentos oficiais da Aferisai…</span>}
+                          {!legalLoading && legalEvidence && typeof legalEvidence.documents === "object" && (
+                            <>
+                              <span className="field-hint">Política jurídica {String(legalEvidence.legal_policy_version)} · hashes calculados a partir do texto publicado em aferis.ai</span>
+                              {legalDocumentNames.map((name) => {
+                                const digest = (legalEvidence.documents as ApiObject)[name] as ApiObject;
+                                return (
+                                  <div className="legal-document-row" key={name}>
+                                    <span>✓</span>
+                                    <strong>{name}</strong>
+                                    <small>v{String(digest?.version ?? "—")} · {String(digest?.sha256 ?? "").slice(0, 12)}…</small>
+                                  </div>
+                                );
+                              })}
+                            </>
+                          )}
+                          {!legalLoading && !legalEvidence && <span className="field-hint">Não foi possível carregar os documentos oficiais.</span>}
+                        </div>
                         <label className="legal-confirmation">
                           <input
                             type="checkbox"
@@ -956,7 +990,7 @@ export default function Home() {
                       className="button payment-button"
                       type="button"
                       onClick={() => void runPix()}
-                      disabled={paymentBusy !== "" || authState !== "connected" || (!pixAttempted && !legalConfirmed)}
+                      disabled={paymentBusy !== "" || authState !== "connected" || legalLoading || (!pixAttempted && (!legalConfirmed || !legalEvidence))}
                     >
                       {paymentBusy === "pix" ? "Processando…" : pixAttempted ? "Consultar PIX existente" : "Gerar PIX"}
                     </button>

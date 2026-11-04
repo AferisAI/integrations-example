@@ -996,6 +996,39 @@ h1 {
   gap: 10px;
 }
 
+.legal-document-list {
+  display: grid;
+  gap: 6px;
+}
+
+.legal-document-row {
+  display: grid;
+  grid-template-columns: 16px 1fr auto;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 8px;
+  border: 1px solid #e7edf3;
+  border-radius: 6px;
+  color: #52647c;
+  font-size: 9px;
+}
+
+.legal-document-row > span {
+  color: #319274;
+  font-weight: 800;
+}
+
+.legal-document-row strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.legal-document-row small {
+  color: #8a96a8;
+  font: 8px ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+
 .legal-evidence .field {
   gap: 6px;
 }
