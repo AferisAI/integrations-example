@@ -15,6 +15,16 @@ type PendingRequest = {
   idempotencyKey: string;
   payload: RequestPayload;
 };
+type RegistryOffice = {
+  id: string;
+  name: string;
+  city: string;
+  state: string;
+  cns: string;
+  cns_ambiguous: boolean;
+  number?: number | null;
+  product_history?: { product: string; availability: string; seen_count: number }[];
+};
 type ApiObject = Record<string, unknown>;
 
 const apiUrl = (process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000").replace(
@@ -23,12 +33,12 @@ const apiUrl = (process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000").repl
 );
 const pendingStorageKey = "aferisai.pendingRegistryRequest";
 const lastRequestStorageKey = "aferisai.lastRegistryRequestId";
-
-function isUuid7(value: string) {
-  return /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
-    value,
-  );
-}
+const selectedOfficeStorageKey = "aferisai.selectedRegistryOffice";
+const brazilianStates = [
+  "AC", "AL", "AP", "AM", "BA", "CE", "DF", "ES", "GO", "MA", "MT", "MS",
+  "MG", "PA", "PB", "PR", "PE", "PI", "RJ", "RN", "RS", "RO", "RR", "SC",
+  "SP", "SE", "TO",
+];
 
 function createUuid7() {
   const bytes = crypto.getRandomValues(new Uint8Array(16));
@@ -85,7 +95,7 @@ function responseStatus(body: unknown) {
 export default function Home() {
   const [authState, setAuthState] = useState<AuthState>("checking");
   const [product, setProduct] = useState<Product>("visualizacao");
-  const [officeId, setOfficeId] = useState("");
+  const [selectedOffice, setSelectedOffice] = useState<RegistryOffice | null>(null);
   const [registrationText, setRegistrationText] = useState("");
   const [addressContext, setAddressContext] = useState("");
   const [pending, setPending] = useState<PendingRequest | null>(null);
@@ -96,6 +106,16 @@ export default function Home() {
   const [loggingOut, setLoggingOut] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const [directoryOpen, setDirectoryOpen] = useState(false);
+  const [directoryState, setDirectoryState] = useState("");
+  const [directoryCity, setDirectoryCity] = useState("");
+  const [directoryCns, setDirectoryCns] = useState("");
+  const [directorySearch, setDirectorySearch] = useState("");
+  const [officeResults, setOfficeResults] = useState<RegistryOffice[]>([]);
+  const [nextOfficeCursor, setNextOfficeCursor] = useState<string | null>(null);
+  const [officesSearched, setOfficesSearched] = useState(false);
+  const [searchingOffices, setSearchingOffices] = useState(false);
+  const [officeError, setOfficeError] = useState("");
 
   useEffect(() => {
     let active = true;
@@ -116,6 +136,8 @@ export default function Home() {
       if (savedPending) setPending(JSON.parse(savedPending) as PendingRequest);
       const savedId = localStorage.getItem(lastRequestStorageKey);
       if (savedId) setOperationId(savedId);
+      const savedOffice = localStorage.getItem(selectedOfficeStorageKey);
+      if (savedOffice) setSelectedOffice(JSON.parse(savedOffice) as RegistryOffice);
     } catch {
       setError("Não foi possível recuperar os dados locais desta sessão.");
     }
@@ -124,6 +146,78 @@ export default function Home() {
       active = false;
     };
   }, []);
+
+  useEffect(() => {
+    if (!directoryOpen) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setDirectoryOpen(false);
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [directoryOpen]);
+
+  async function searchOffices(cursor?: string, append = false) {
+    setOfficeError("");
+    if (!directoryState) {
+      setOfficeError("Selecione a UF do cartório para iniciar a busca.");
+      return;
+    }
+    if (directoryCity.trim() && directoryCity.trim().length < 2) {
+      setOfficeError("Informe pelo menos 2 caracteres para a cidade.");
+      return;
+    }
+    if (directorySearch.trim() && directorySearch.trim().length < 2) {
+      setOfficeError("Informe pelo menos 2 caracteres para o nome.");
+      return;
+    }
+    if (directoryCns.trim() && !/^\d{1,50}$/.test(directoryCns.trim())) {
+      setOfficeError("O CNS deve conter somente números.");
+      return;
+    }
+
+    if (!append) {
+      setOfficeResults([]);
+      setNextOfficeCursor(null);
+      setOfficesSearched(false);
+    }
+
+    const params = new URLSearchParams({ state: directoryState, limit: "20" });
+    if (directoryCity.trim()) params.set("city", directoryCity.trim());
+    if (directoryCns.trim()) params.set("cns", directoryCns.trim());
+    if (directorySearch.trim()) params.set("search", directorySearch.trim());
+    if (cursor) params.set("cursor", cursor);
+
+    setSearchingOffices(true);
+    try {
+      const response = await fetch(`${apiUrl}/api/registry-offices?${params.toString()}`);
+      const body = await response.json().catch(() => null);
+      if (!response.ok) {
+        throw new Error(readError(body, "Não foi possível buscar cartórios."));
+      }
+      const page = body && typeof body === "object"
+        ? body as { items?: RegistryOffice[]; next_cursor?: string | null }
+        : {};
+      const items = Array.isArray(page.items) ? page.items : [];
+      setOfficeResults((current) => append ? [...current, ...items] : items);
+      setNextOfficeCursor(page.next_cursor ?? null);
+      setOfficesSearched(true);
+    } catch (reason) {
+      setOfficeError(reason instanceof Error ? reason.message : "Falha ao buscar cartórios.");
+    } finally {
+      setSearchingOffices(false);
+    }
+  }
+
+  function chooseOffice(office: RegistryOffice) {
+    setSelectedOffice(office);
+    try {
+      localStorage.setItem(selectedOfficeStorageKey, JSON.stringify(office));
+    } catch {
+      // A escolha continua válida durante esta sessão mesmo sem armazenamento local.
+    }
+    setDirectoryOpen(false);
+    setOfficeError("");
+  }
 
   async function loadRequest(id = operationId) {
     const normalizedId = id.trim();
@@ -219,8 +313,8 @@ export default function Home() {
       setError("Resolva ou reenvie a tentativa pendente antes de criar outro pedido.");
       return;
     }
-    if (!isUuid7(officeId.trim())) {
-      setError("Informe o UUIDv7 do cartório escolhido no diretório.");
+    if (!selectedOffice) {
+      setError("Busque e selecione um cartório no diretório.");
       return;
     }
 
@@ -239,7 +333,7 @@ export default function Home() {
 
     const payload: RequestPayload = {
       product,
-      office_id: officeId.trim(),
+      office_id: selectedOffice.id,
       registration_numbers: registrationNumbers,
       ...(addressContext.trim() ? { address_context: addressContext.trim() } : {}),
     };
@@ -368,17 +462,36 @@ export default function Home() {
                 <span className="field-hint">Visualização aceita apenas matrícula local. CNM exige inteiro teor.</span>
               </label>
 
-              <label className="field">
+              <div className="field">
                 <span className="field-label">Cartório <span className="required">*</span></span>
-                <input
-                  value={officeId}
-                  onChange={(event) => setOfficeId(event.target.value)}
-                  placeholder="UUIDv7 do cartório no diretório"
-                  autoComplete="off"
-                  spellCheck={false}
-                />
-                <span className="field-hint">Use o identificador exato do cartório selecionado.</span>
-              </label>
+                {selectedOffice ? (
+                  <div className="selected-office">
+                    <span className="selected-office-mark">⌖</span>
+                    <span className="selected-office-copy">
+                      <strong>{selectedOffice.name}</strong>
+                      <small>{selectedOffice.city} / {selectedOffice.state} · CNS {selectedOffice.cns}</small>
+                    </span>
+                    {selectedOffice.cns_ambiguous && <span className="ambiguity-badge">CNS compartilhado</span>}
+                    <button type="button" className="change-office" onClick={() => setDirectoryOpen(true)}>
+                      Alterar
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    className="office-picker-trigger"
+                    onClick={() => {
+                      setOfficeError("");
+                      setDirectoryOpen(true);
+                    }}
+                  >
+                    <span className="picker-search-icon">⌕</span>
+                    <span><strong>Buscar cartório no diretório</strong><small>Selecione pelo nome, cidade ou CNS</small></span>
+                    <span className="picker-arrow">→</span>
+                  </button>
+                )}
+                <span className="field-hint">Selecione a serventia correspondente antes de informar as matrículas.</span>
+              </div>
 
               <label className="field">
                 <span className="field-label">Matrículas <span className="required">*</span></span>
@@ -503,6 +616,109 @@ export default function Home() {
             </div>
           </aside>
         </div>
+
+        {directoryOpen && (
+          <div
+            className="dialog-backdrop"
+            onMouseDown={(event) => {
+              if (event.target === event.currentTarget) setDirectoryOpen(false);
+            }}
+          >
+            <section className="directory-dialog" role="dialog" aria-modal="true" aria-labelledby="directory-title">
+              <div className="directory-dialog-heading">
+                <div className="panel-icon icon-violet">⌕</div>
+                <div>
+                  <h2 id="directory-title">Buscar cartório</h2>
+                  <p>Filtre o diretório e selecione o cadastro correto.</p>
+                </div>
+                <button type="button" className="dialog-close" onClick={() => setDirectoryOpen(false)} aria-label="Fechar busca">×</button>
+              </div>
+
+              <form
+                className="directory-filters"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  void searchOffices();
+                }}
+              >
+                <label className="field state-filter">
+                  <span className="field-label">UF <span className="required">*</span></span>
+                  <select autoFocus value={directoryState} onChange={(event) => setDirectoryState(event.target.value)}>
+                    <option value="">Selecione</option>
+                    {brazilianStates.map((state) => <option key={state} value={state}>{state}</option>)}
+                  </select>
+                </label>
+                <label className="field city-filter">
+                  <span className="field-label">Cidade</span>
+                  <input value={directoryCity} onChange={(event) => setDirectoryCity(event.target.value)} placeholder="Ex.: Florianópolis" />
+                </label>
+                <label className="field name-filter">
+                  <span className="field-label">Nome do cartório</span>
+                  <input value={directorySearch} onChange={(event) => setDirectorySearch(event.target.value)} placeholder="Parte do nome" />
+                </label>
+                <label className="field cns-filter">
+                  <span className="field-label">CNS</span>
+                  <input inputMode="numeric" value={directoryCns} onChange={(event) => setDirectoryCns(event.target.value)} placeholder="CNS exato" />
+                </label>
+                <button className="button directory-submit" type="submit" disabled={searchingOffices}>
+                  {searchingOffices ? "Buscando…" : "Buscar cartórios"}
+                  {!searchingOffices && <span aria-hidden="true">⌕</span>}
+                </button>
+              </form>
+
+              {officeError && <div className="directory-error" role="alert">{officeError}</div>}
+
+              <div className="directory-results" aria-live="polite">
+                {!officesSearched && !searchingOffices && (
+                  <div className="directory-placeholder">
+                    <span className="placeholder-symbol">⌕</span>
+                    <strong>Escolha a UF e aplique os filtros</strong>
+                    <p>Pesquise por município, parte do nome do cartório ou CNS.</p>
+                  </div>
+                )}
+                {searchingOffices && officeResults.length === 0 && (
+                  <div className="directory-placeholder"><span className="loading-spinner" /><strong>Consultando diretório…</strong></div>
+                )}
+                {officesSearched && officeResults.length === 0 && !searchingOffices && (
+                  <div className="directory-placeholder">
+                    <strong>Nenhum cartório encontrado</strong>
+                    <p>Revise a UF e os filtros ou tente um nome mais amplo.</p>
+                  </div>
+                )}
+                {officeResults.map((office) => (
+                  <button key={office.id} type="button" className="office-result" onClick={() => chooseOffice(office)}>
+                    <span className="office-result-mark">⌖</span>
+                    <span className="office-result-content">
+                      <span className="office-result-title">
+                        <strong>{office.name}</strong>
+                        {office.cns_ambiguous && <span className="ambiguity-badge">CNS compartilhado</span>}
+                      </span>
+                      <span className="office-result-meta">{office.city} / {office.state} · CNS {office.cns}{office.number ? ` · nº ${office.number}` : ""}</span>
+                      {office.product_history && office.product_history.length > 0 && (
+                        <span className="office-history">Histórico de disponibilidade registrado para {office.product_history.length} produto(s)</span>
+                      )}
+                    </span>
+                    <span className="office-select-label">Selecionar <span aria-hidden="true">→</span></span>
+                  </button>
+                ))}
+              </div>
+
+              <div className="directory-dialog-footer">
+                <p>O diretório é histórico: disponibilidade e médias não confirmam serviço nem preço vigente.</p>
+                {nextOfficeCursor && (
+                  <button
+                    type="button"
+                    className="button button-secondary load-more-button"
+                    onClick={() => void searchOffices(nextOfficeCursor, true)}
+                    disabled={searchingOffices}
+                  >
+                    {searchingOffices ? "Carregando…" : "Carregar mais"}
+                  </button>
+                )}
+              </div>
+            </section>
+          </div>
+        )}
 
         <footer className="page-footer">
           <span>Exemplo de integração · Aferisai Partner API</span>

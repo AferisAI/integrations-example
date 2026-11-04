@@ -1,6 +1,6 @@
 # Exemplo OAuth e pedidos registrais Aferisai
 
-Aplicação de exemplo com FastAPI no servidor e Next.js no client. O servidor conduz o OAuth 2.0, mantém o token fora do navegador e faz as chamadas autenticadas à Partner API. A interface permite criar um pedido registral e consultar seu status pelo ID.
+Aplicação de exemplo com FastAPI no servidor e Next.js no client. O servidor conduz o OAuth 2.0, mantém o token fora do navegador e faz as chamadas à API Aferisai. A interface busca cartórios no diretório, cria um pedido registral e consulta seu status pelo ID.
 
 ## Requisitos
 
@@ -45,10 +45,11 @@ Abra `http://localhost:3000`, conecte a conta Aferisai e preencha os dados do pe
 
 ## Fluxo de pedido
 
-1. O formulário valida o cartório UUIDv7 e aceita de 1 a 100 matrículas sem repetição.
-2. Antes do POST, o client gera uma `Idempotency-Key` UUIDv7 e guarda a chave junto do corpo em `localStorage`.
-3. O FastAPI encaminha o pedido a `POST /v1/partner/registry-requests/number` com o Bearer token mantido no servidor.
-4. Com o ID retornado, o client consulta `GET /v1/partner/registry-requests/{id}`. Também é possível atualizar o status ou informar um ID anterior.
+1. Escolha a UF e filtre cartórios por cidade, nome ou CNS. A busca usa `GET /v1/registry-offices`, endpoint público paginado pelo cursor do diretório.
+2. Selecione o cadastro correto; a interface envia o UUIDv7 retornado pelo diretório sem pedir que seja digitado. Cadastros com CNS ambíguo aparecem identificados.
+3. Informe de 1 a 100 matrículas sem repetição. Antes do POST, o client gera uma `Idempotency-Key` UUIDv7 e guarda a chave junto do corpo em `localStorage`.
+4. O FastAPI encaminha o pedido a `POST /v1/partner/registry-requests/number` com o Bearer token mantido no servidor.
+5. Com o ID retornado, o client consulta `GET /v1/partner/registry-requests/{id}`. Também é possível atualizar o status ou informar um ID anterior.
 
 Se a resposta do POST se perder, use **Reenviar tentativa**: o mesmo corpo e a mesma chave são reutilizados. Não altere a chave de um pedido já enviado. A interface mantém o retorno completo da API visível para facilitar a inclusão de novas funcionalidades.
 
@@ -56,7 +57,7 @@ Se a resposta do POST se perder, use **Reenviar tentativa**: o mesmo corpo e a m
 
 ```text
 server/app/
-  api/           rotas HTTP e validação de entrada
+  api/           busca do diretório, pedidos e validação de entrada
   core/          configuração por ambiente
   models/        contratos de entrada
   repositories/  armazenamento de token para desenvolvimento

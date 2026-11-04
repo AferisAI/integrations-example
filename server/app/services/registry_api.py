@@ -9,6 +9,13 @@ from app.models.registry_request import RegistryRequestInput
 
 
 class RegistryApi:
+    async def list_offices(self, filters: dict[str, Any]) -> JSONResponse:
+        return await self._request(
+            "GET",
+            "/v1/registry-offices",
+            params=filters,
+        )
+
     async def create(
         self, access_token: str, idempotency_key: str, payload: RegistryRequestInput
     ) -> JSONResponse:
@@ -28,14 +35,19 @@ class RegistryApi:
         )
 
     async def _request(
-        self, method: str, path: str, access_token: str, **kwargs: Any
+        self,
+        method: str,
+        path: str,
+        access_token: str | None = None,
+        **kwargs: Any,
     ) -> JSONResponse:
+        headers = {"Authorization": f"Bearer {access_token}"} if access_token else {}
         try:
             async with httpx.AsyncClient(timeout=15) as client:
                 response = await client.request(
                     method,
                     f"{settings.aferis_api_url}{path}",
-                    headers={"Authorization": f"Bearer {access_token}"},
+                    headers=headers,
                     **kwargs,
                 )
         except httpx.RequestError as error:
