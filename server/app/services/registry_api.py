@@ -42,6 +42,7 @@ class RegistryApi:
         **kwargs: Any,
     ) -> JSONResponse:
         headers = {"Authorization": f"Bearer {access_token}"} if access_token else {}
+        headers.update(kwargs.pop("headers", {}))
         try:
             async with httpx.AsyncClient(timeout=15) as client:
                 response = await client.request(
