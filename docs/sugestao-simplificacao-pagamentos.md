@@ -39,7 +39,7 @@ A complexidade principal vem de três pontos: dois modelos de autenticação par
 
 ### Prioridade 2: publicar os documentos legais na API
 
-- Fornecer um endpoint de catálogo, por exemplo `GET /v1/legal-documents/current`, com versão do conjunto, texto ou URL oficial, versão individual e SHA-256 canônico dos cinco documentos.
+- O endpoint `GET /v1/legal/catalog` fornece a versão do conjunto, a versão individual e o SHA-256 canônico de cada documento. O integrador deve consumir esses valores e nunca derivá-los de arquivos locais.
 - Expor uma operação de aceite que registre a versão apresentada ao titular e devolva um `legal_acceptance_id` de curta duração. O checkout enviaria esse identificador em vez de um JSON montado manualmente pelo integrador.
 - Documentar claramente se o hash é calculado sobre texto puro, HTML renderizado ou outro formato canônico.
 
@@ -65,12 +65,41 @@ Com os recursos atuais, o caminho seguro é:
 6. Criar uma única intenção PIX; em caso de resposta incerta, consultar a intenção existente.
 7. Consultar um estado de pagamento explícito até `paid`, `expired`, `cancelled` ou `failed`. O schema atual de PIX devolve os dados do QR, sem um campo de estado de pagamento; o status técnico do pedido não deve ser interpretado como confirmação financeira.
 
+## Contrato recomendado para o integrador
+
+O parceiro deve chamar somente:
+
+```text
+POST /api/orders
+GET  /api/orders/{id}
+POST /api/orders/{id}/payment
+```
+
+O servidor do parceiro concentra OAuth, idempotência, prévia, cotação, pagamento e reconciliação. O corpo do pagamento deve conter apenas o método, os dados do pagador e a confirmação do aceite:
+
+```json
+{
+  "method": "pix",
+  "payer": {
+    "name": "Nome do pagador",
+    "document": "CPF ou CNPJ",
+    "email": "pagador@example.com",
+    "phone": "5511999999999"
+  },
+  "legal_acceptance": {
+    "accepted": true,
+    "version": "2026-11"
+  }
+}
+```
+
+O integrador não envia `sha256`, não escolhe os cinco documentos e não precisa chamar preview/quote/PIX. O servidor mantém o catálogo oficial e calcula a evidência legal internamente.
+
 ## Recomendações para este projeto
 
-1. **Agora:** manter o exemplo restrito ao PIX delegado; exibir crédito e cartão como indisponíveis e explicar que exigem outra autenticação.
-2. **Próxima melhoria:** substituir os marcadores `localStorage` por uma tabela simples de operações no servidor, com chave por titular, aplicação, pedido e etapa. Isso preserva a reconciliação após refresh ou troca de navegador.
-3. **Quando a API oferecer os recursos:** trocar o JSON manual de hashes por um catálogo legal oficial e adicionar métodos de pagamento conforme os escopos delegados publicados.
-4. **Para cartão:** preferir checkout hospedado. O modo direto aumenta a responsabilidade de segurança e o escopo de conformidade da aplicação.
+1. **Agora:** usar a fachada de ordens e o PIX delegado; créditos e cartão continuam indisponíveis até existir contrato OAuth próprio.
+2. **Próxima melhoria:** persistir operações no servidor em vez de depender do `localStorage` para reconciliação entre dispositivos.
+3. **Para cartão:** preferir checkout hospedado. O modo direto aumenta a responsabilidade de segurança e o escopo de conformidade da aplicação.
 
 ## Decisão pendente
 

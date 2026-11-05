@@ -945,11 +945,29 @@ h1 {
   gap: 9px;
 }
 
+.payer-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.payer-grid .field {
+  gap: 5px;
+}
+
 .payment-method-row {
   gap: 9px;
   padding: 10px;
   border: 1px solid #e9edf4;
   border-radius: 8px;
+}
+
+button.payment-method-row {
+  width: 100%;
+  color: inherit;
+  background: #fff;
+  text-align: left;
+  cursor: pointer;
 }
 
 .payment-method-row.selected {
@@ -1006,6 +1024,11 @@ h1 {
 .pix-icon {
   background: #e9f7f4;
   color: #26816a;
+}
+
+.credits-icon {
+  background: #fff3df;
+  color: #a96b16;
 }
 
 .method-availability {
@@ -1534,6 +1557,10 @@ h1 {
 }
 
 @media (max-width: 600px) {
+  .payer-grid {
+    grid-template-columns: 1fr;
+  }
+
   .topbar {
     height: 66px;
     padding: 0 18px;
