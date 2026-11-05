@@ -93,6 +93,21 @@ class PartnerOrderServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.body["state"], "payment_created")
         self.assertEqual(result.body["payment"]["status"], "pending")
 
+    async def test_payment_reuses_existing_quote_without_repeating_preview(self):
+        self.service.gateway.preview = self._unexpected_preview
+        result = await self.service.pay(
+            "token",
+            "order-1",
+            OrderPaymentInput(
+                payer=PayerInput(name="Titular", document="00000000000", email="titular@example.com"),
+                legal_acceptance=LegalAcceptanceInput(accepted=True, version="2026-11"),
+            ),
+        )
+        self.assertEqual(result.status_code, 201)
+
+    async def _unexpected_preview(self, access_token, operation_id):
+        raise AssertionError("preview não deve ser repetida quando a cotação já existe")
+
     async def test_credits_payment_uses_same_simple_contract_without_payer(self):
         payment = OrderPaymentInput(
             method="credits",

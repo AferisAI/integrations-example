@@ -83,13 +83,20 @@ class PartnerOrderService:
     async def pay(
         self, access_token: str, order_id: str, payload: OrderPaymentInput
     ) -> OrderResult:
-        preview = await self.gateway.preview(access_token, order_id)
-        if not _successful(preview.status_code):
-            return _problem(preview.status_code, _json_body(preview), preview.headers)
+        # Payment can be retried after the user refreshed the order. Reusing an
+        # existing quote is safe; repeating the provider preview is not.
+        existing_quote = await self.gateway.get_quote(access_token, order_id)
+        if _successful(existing_quote.status_code):
+            quote_body = _json_body(existing_quote)
+        else:
+            preview = await self.gateway.preview(access_token, order_id)
+            if not _successful(preview.status_code):
+                return _problem(preview.status_code, _json_body(preview), preview.headers)
 
-        quote = await self.gateway.quote(access_token, order_id, {})
-        if not _successful(quote.status_code):
-            return _problem(quote.status_code, _json_body(quote), quote.headers)
+            quote = await self.gateway.quote(access_token, order_id, {})
+            if not _successful(quote.status_code):
+                return _problem(quote.status_code, _json_body(quote), quote.headers)
+            quote_body = _json_body(quote)
 
         payment_payload = await self.legal_documents.build_evidence(
             access_token, payload.legal_acceptance
