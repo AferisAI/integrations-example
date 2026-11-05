@@ -43,32 +43,33 @@ npm run dev
 
 Abra `http://localhost:3000`, conecte a conta Aferisai e preencha os dados do pedido.
 
-## Fluxo de pedido
+## Fluxo de pedido simplificado
 
 1. Escolha a UF e filtre cartórios por cidade, nome ou CNS. A busca usa `GET /v1/registry-offices`, endpoint público paginado pelo cursor do diretório.
 2. Selecione o cadastro correto; a interface envia o UUIDv7 retornado pelo diretório sem pedir que seja digitado. Cadastros com CNS ambíguo aparecem identificados.
 3. Informe de 1 a 100 matrículas sem repetição. Antes do POST, o client gera uma `Idempotency-Key` UUIDv7 e guarda a chave junto do corpo em `localStorage`.
-4. O FastAPI encaminha o pedido a `POST /v1/partner/registry-requests/number` com o Bearer token mantido no servidor.
-5. Com o ID retornado, o client consulta `GET /v1/partner/registry-requests/{id}`. Também é possível atualizar o status ou informar um ID anterior.
+4. O client chama `POST /api/orders` com uma `Idempotency-Key`; o servidor encaminha a operação com o Bearer token mantido no servidor.
+5. Com o ID retornado, o client consulta `GET /api/orders/{id}`. Essa resposta já agrega ordem, cotação, pagamento e próxima ação.
 
 Se a resposta do POST se perder, use **Reenviar tentativa**: o mesmo corpo e a mesma chave são reutilizados. Não altere a chave de um pedido já enviado. A interface mantém o retorno completo da API visível para facilitar a inclusão de novas funcionalidades.
 
-## Cotação e pagamento
+## Cotação e pagamento em uma ação
 
-O fluxo OAuth delegado usa os escopos `registry:preview`, `registry:quote` e `registry:pay`:
+O integrador não chama mais endpoints separados de prévia, cotação ou PIX. Depois de criar a ordem:
 
-1. `POST /v1/partner/registry-requests/{id}/preview` consulta o custo no fornecedor. A API permite uma única prévia; a interface grava a tentativa no navegador e não repete o POST.
-2. `POST /v1/partner/registry-requests/{id}/quote` aprova a cotação. Se o resultado do POST for incerto, a interface consulta `GET /v1/partner/registry-requests/{id}/quote`; ao receber `pricing_registry_quote_not_found`, ela confirma a ausência e permite reenviar o POST. A API valida a prévia antes de aprovar a cotação.
-3. Antes do primeiro PIX, informe nome e CPF/CNPJ no formulário. O cliente envia esses dados no campo `payer` do próprio `POST /v1/partner/registry-requests/{id}/pix`; a API cadastra o pagador cifrado na conta conectada. Após a primeira cobrança bem-sucedida, o exemplo grava apenas um marcador local e não pede os dados novamente para essa sessão. A API aceita `payer` opcional em pedidos seguintes.
-4. O servidor busca as cinco páginas oficiais em `aferis.ai/legal`, calcula os SHA-256 do texto renderizado e envia essa evidência junto do PIX. Resultado incerto deve ser reconciliado com `GET /v1/partner/registry-requests/{id}/pix`, sem repetir o POST.
+1. Consulte `GET /api/orders/{id}` para obter valor, estado e métodos disponíveis.
+2. Envie `POST /api/orders/{id}/payment` com o método, os dados simples do pagador e `legal_acceptance: { accepted: true, version }`.
+3. O servidor executa internamente prévia, cotação e PIX e devolve uma única resposta. Em caso de timeout, consulte novamente a ordem; não repita a cobrança.
 
-O `api-1.yaml` também adiciona pagamento delegado com créditos em `POST /v1/partner/registry-requests/{id}/credits`, exigindo o escopo `payment:credits`. Cartão delegado ainda não aparece no contrato novo.
+O integrador nunca calcula SHA-256 nem lê documentos locais. O servidor consulta `GET /v1/legal/catalog` na API AferisAI e encaminha a versão e os SHA-256 canônicos retornados pelo catálogo. Se o catálogo estiver indisponível ou inválido, o aceite/pagamento falha explicitamente; não há fallback para arquivos locais.
 
-O cartão de crédito ou débito continua indisponível porque ainda não existe endpoint delegado para ele no contrato novo. O pagamento com créditos já usa Bearer delegado e o escopo `payment:credits`.
+Créditos, cartão de crédito e cartão de débito aparecem como indisponíveis nesta interface porque os endpoints correspondentes (`/v1/payments/...`) exigem o cookie de sessão própria `__Host-aferis_user`, além de Origin e CSRF. Eles não aceitam o Bearer OAuth delegado usado neste exemplo. Para habilitar esses meios, implemente separadamente o fluxo de sessão de usuário descrito pela API; não encaminhe o token delegado a esses endpoints.
 
-As rotas locais do proxy ficam em `/api/registry-requests/{id}/preview`, `/quote` e `/pix`. Para uma cotação ou intenção PIX incerta, use a consulta GET correspondente. O OpenAPI atual não oferece GET de prévia para parceiros; não repita essa operação e siga o procedimento de conciliação da Aferisai.
+Os paths locais de `registry-requests/{id}/preview`, `quote` e `pix` foram removidos. Eles são detalhes internos do adaptador e não fazem parte da integração recomendada.
 
 Para análise de complexidade, limitações do OAuth delegado e propostas de melhoria da API, consulte [sugestão para simplificar a integração de pagamentos](docs/sugestao-simplificacao-pagamentos.md).
+
+Para a revisão completa dos acessos do parceiro e o desenho visual dos endpoints, consulte [referência da API do parceiro](docs/partner-api-reference.md).
 
 ## Organização e próximos passos
 

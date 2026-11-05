@@ -9,6 +9,13 @@ from app.models.registry_request import RegistryRequestInput
 
 
 class RegistryApi:
+    async def get_legal_documents(self, access_token: str) -> JSONResponse:
+        return await self._request(
+            "GET",
+            "/v1/legal/catalog",
+            access_token,
+        )
+
     async def list_offices(self, filters: dict[str, Any]) -> JSONResponse:
         return await self._request(
             "GET",
@@ -68,13 +75,6 @@ class RegistryApi:
             json=payload,
         )
 
-    async def get_pix(self, access_token: str, operation_id: str) -> JSONResponse:
-        return await self._request(
-            "GET",
-            f"/v1/partner/registry-requests/{operation_id}/pix",
-            access_token,
-        )
-
     async def create_credits(
         self, access_token: str, operation_id: str, payload: dict[str, Any]
     ) -> JSONResponse:
@@ -85,6 +85,12 @@ class RegistryApi:
             json=payload,
         )
 
+    async def get_pix(self, access_token: str, operation_id: str) -> JSONResponse:
+        return await self._request(
+            "GET",
+            f"/v1/partner/registry-requests/{operation_id}/pix",
+            access_token,
+        )
 
     async def _request(
         self,

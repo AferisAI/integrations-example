@@ -15,8 +15,8 @@ type PendingRequest = {
   idempotencyKey: string;
   payload: RequestPayload;
 };
-type PaymentAction = "preview" | "quote" | "pix";
-type PaymentApiResult = { status: number; body: unknown };
+type PaymentAction = "payment";
+type PaymentMethod = "pix" | "credits";
 type RegistryOffice = {
   id: string;
   name: string;
@@ -28,10 +28,6 @@ type RegistryOffice = {
   product_history?: { product: string; availability: string; seen_count: number }[];
 };
 type ApiObject = Record<string, unknown>;
-type LegalEvidence = {
-  legal_policy_version: string;
-  documents: Record<string, { version: string; sha256: string; url?: string }>;
-};
 
 const apiUrl = (process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000").replace(
   /\/$/,
@@ -40,13 +36,6 @@ const apiUrl = (process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000").repl
 const pendingStorageKey = "aferisai.pendingRegistryRequest";
 const lastRequestStorageKey = "aferisai.lastRegistryRequestId";
 const selectedOfficeStorageKey = "aferisai.selectedRegistryOffice";
-const legalDocumentNames = [
-  "politica-de-privacidade",
-  "termos-de-servico",
-  "politica-de-cancelamento-e-reembolso",
-  "exclusao-de-dados",
-  "aviso-de-cookies",
-];
 const brazilianStates = [
   "AC", "AL", "AP", "AM", "BA", "CE", "DF", "ES", "GO", "MA", "MT", "MS",
   "MG", "PA", "PB", "PR", "PE", "PI", "RJ", "RN", "RS", "RO", "RR", "SC",
@@ -105,75 +94,12 @@ function responseStatus(body: unknown) {
   return "Aguardando atualização";
 }
 
-function paymentKey(action: PaymentAction, id: string) {
-  return `aferisai.payment.${action}.${id}`;
-}
-
-function storageValue(key: string) {
-  try {
-    return localStorage.getItem(key);
-  } catch {
-    return null;
-  }
-}
-
-function saveStorageValue(key: string, value: string) {
-  try {
-    localStorage.setItem(key, value);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function removeStorageValue(key: string) {
-  try {
-    localStorage.removeItem(key);
-  } catch {
-    // The next action still depends on the in-memory attempt state.
-  }
-}
-
 function formatAmount(cents: unknown) {
   if (typeof cents !== "number") return "Valor indisponível";
   return new Intl.NumberFormat("pt-BR", {
     style: "currency",
     currency: "BRL",
   }).format(cents / 100);
-}
-
-function isLegalEvidence(value: unknown): value is LegalEvidence {
-  if (!value || typeof value !== "object") return false;
-  const evidence = value as ApiObject;
-  const documents = evidence.documents;
-  if (
-    typeof evidence.legal_policy_version !== "string" ||
-    !evidence.legal_policy_version.trim() ||
-    evidence.legal_policy_version.length > 32 ||
-    !documents || typeof documents !== "object" || Array.isArray(documents)
-  ) return false;
-  const entries = documents as ApiObject;
-  if (Object.keys(entries).length !== legalDocumentNames.length) return false;
-  return legalDocumentNames.every((name) => {
-    const document = entries[name];
-    if (!document || typeof document !== "object") return false;
-    const digest = document as ApiObject;
-    return typeof digest.version === "string" &&
-      /^[0-9A-Za-z][0-9A-Za-z.-]{0,31}$/.test(digest.version) &&
-      typeof digest.sha256 === "string" && /^[0-9a-f]{64}$/.test(digest.sha256);
-  });
-}
-
-function legalPayload(value: LegalEvidence) {
-  return {
-    legal_policy_version: value.legal_policy_version,
-    documents: Object.fromEntries(
-      legalDocumentNames.map((name) => {
-        const digest = value.documents[name];
-        return [name, { version: digest.version, sha256: digest.sha256 }];
-      }),
-    ),
-  };
 }
 
 export default function Home() {
@@ -189,20 +115,13 @@ export default function Home() {
   const [submitting, setSubmitting] = useState(false);
   const [loadingRequest, setLoadingRequest] = useState(false);
   const [paymentBusy, setPaymentBusy] = useState<PaymentAction | "">("");
-  const [creditBusy, setCreditBusy] = useState(false);
-  const [creditData, setCreditData] = useState<ApiObject | null>(null);
-  const [previewAttempted, setPreviewAttempted] = useState(false);
-  const [previewData, setPreviewData] = useState<unknown>(null);
-  const [quoteAttempted, setQuoteAttempted] = useState(false);
   const [quoteData, setQuoteData] = useState<ApiObject | null>(null);
-  const [pixAttempted, setPixAttempted] = useState(false);
   const [pixData, setPixData] = useState<ApiObject | null>(null);
+  const [legalConfirmed, setLegalConfirmed] = useState(false);
+  const [legalVersion, setLegalVersion] = useState("");
   const [payerName, setPayerName] = useState("");
   const [payerDocument, setPayerDocument] = useState("");
-  const [payerRegistered, setPayerRegistered] = useState(false);
-  const [legalEvidence, setLegalEvidence] = useState<ApiObject | null>(null);
-  const [legalLoading, setLegalLoading] = useState(false);
-  const [legalConfirmed, setLegalConfirmed] = useState(false);
+  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>("pix");
   const [pixCopied, setPixCopied] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
   const [error, setError] = useState("");
@@ -217,10 +136,6 @@ export default function Home() {
   const [officesSearched, setOfficesSearched] = useState(false);
   const [searchingOffices, setSearchingOffices] = useState(false);
   const [officeError, setOfficeError] = useState("");
-
-  useEffect(() => {
-    setPayerRegistered(storageValue("aferisai.payerRegistered") === "1");
-  }, [authState]);
 
   useEffect(() => {
     let active = true;
@@ -253,46 +168,29 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
+    fetch(`${apiUrl}/api/orders/legal-documents`, { credentials: "include" })
+      .then(async (response) => {
+        const body = await response.json().catch(() => null);
+        if (!response.ok) throw new Error(readError(body, "Não foi possível carregar o catálogo legal."));
+        return body;
+      })
+      .then((body: unknown) => {
+        if (body && typeof body === "object" && typeof (body as ApiObject).version === "string") {
+          setLegalVersion((body as ApiObject).version as string);
+          return;
+        }
+        setError("O catálogo legal da Aferis retornou uma versão inválida.");
+      })
+      .catch((reason) => setError(reason instanceof Error ? reason.message : "Não foi possível carregar o catálogo legal."));
+  }, []);
+
+  useEffect(() => {
     if (!activeRequestId) return;
-    setPreviewAttempted(storageValue(paymentKey("preview", activeRequestId)) === "1");
-    setQuoteAttempted(storageValue(paymentKey("quote", activeRequestId)) === "1");
-    setPixAttempted(storageValue(paymentKey("pix", activeRequestId)) === "1");
-    try {
-      const savedPreview = storageValue(`${paymentKey("preview", activeRequestId)}.result`);
-      setPreviewData(savedPreview ? JSON.parse(savedPreview) : null);
-    } catch {
-      setPreviewData(null);
-    }
     setQuoteData(null);
     setPixData(null);
-    setLegalEvidence(null);
     setLegalConfirmed(false);
     setPixCopied(false);
   }, [activeRequestId]);
-
-  useEffect(() => {
-    if (!quoteData || !activeRequestId || legalEvidence) return;
-    let active = true;
-    setLegalLoading(true);
-    fetch(`${apiUrl}/api/legal-documents`)
-      .then(async (response) => {
-        const body = await response.json().catch(() => null);
-        if (!response.ok) throw new Error(readError(body, "Não foi possível carregar os documentos legais oficiais."));
-        return body;
-      })
-      .then((body) => {
-        if (active && body && typeof body === "object") setLegalEvidence(body as ApiObject);
-      })
-      .catch((reason) => {
-        if (active) setError(reason instanceof Error ? reason.message : "Falha ao carregar os documentos legais.");
-      })
-      .finally(() => {
-        if (active) setLegalLoading(false);
-      });
-    return () => {
-      active = false;
-    };
-  }, [quoteData, activeRequestId, legalEvidence]);
 
   useEffect(() => {
     if (!directoryOpen) return;
@@ -382,7 +280,7 @@ export default function Home() {
     setNotice("");
     try {
       const response = await fetch(
-        `${apiUrl}/api/registry-requests/${encodeURIComponent(normalizedId)}`,
+        `${apiUrl}/api/orders/${encodeURIComponent(normalizedId)}`,
         { credentials: "include" },
       );
       const body = await response.json().catch(() => null);
@@ -391,6 +289,11 @@ export default function Home() {
         throw new Error(readError(body, "Não foi possível consultar este pedido."));
       }
       setRequest(body);
+      if (body && typeof body === "object") {
+        const aggregate = body as ApiObject;
+        setQuoteData(aggregate.quote && typeof aggregate.quote === "object" ? aggregate.quote as ApiObject : null);
+        setPixData(aggregate.payment && typeof aggregate.payment === "object" ? aggregate.payment as ApiObject : null);
+      }
       setOperationId(normalizedId);
       setActiveRequestId(normalizedId);
       localStorage.setItem(lastRequestStorageKey, normalizedId);
@@ -402,184 +305,48 @@ export default function Home() {
     }
   }
 
-  async function callPaymentApi(action: PaymentAction, method: "GET" | "POST", payload?: unknown) {
-    if (!activeRequestId || authState !== "connected") {
-      setError("Conecte sua conta e consulte um pedido antes de continuar.");
-      return null;
+  async function runPayment() {
+    if (!activeRequestId) return;
+    if (paymentMethod === "pix" && (!payerName.trim() || !payerDocument.trim())) {
+      setError("Informe nome e CPF/CNPJ do pagador.");
+      return;
     }
-    setPaymentBusy(action);
+    if (!legalConfirmed || !legalVersion) {
+      setError("Confirme o aceite legal para a versão oficial disponível.");
+      return;
+    }
+    setPaymentBusy("payment");
     setError("");
     setNotice("");
     try {
-      const response = await fetch(
-        `${apiUrl}/api/registry-requests/${encodeURIComponent(activeRequestId)}/${action}`,
-        {
-          method,
-          credentials: "include",
-          ...(method === "POST"
-            ? { headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload ?? {}) }
-            : {}),
-        },
-      );
-      const body = await response.json().catch(() => null);
-      if (!response.ok) {
-        if (response.status === 401) setAuthState("disconnected");
-        if (method === "POST" && [401, 422].includes(response.status)) {
-          removeStorageValue(paymentKey(action, activeRequestId));
-          if (action === "preview") setPreviewAttempted(false);
-          if (action === "quote") setQuoteAttempted(false);
-          if (action === "pix") setPixAttempted(false);
-        }
-        setError(readError(body, "Não foi possível continuar o fluxo de pagamento."));
-        return { status: response.status, body } satisfies PaymentApiResult;
-      }
-      return { status: response.status, body } satisfies PaymentApiResult;
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Falha ao consultar o pagamento.");
-      return null;
-    } finally {
-      setPaymentBusy("");
-    }
-  }
-
-  async function runPreview() {
-    if (!activeRequestId || previewAttempted) return;
-    if (!saveStorageValue(paymentKey("preview", activeRequestId), "1")) {
-      setError("Ative o armazenamento local antes de iniciar uma prévia de tentativa única.");
-      return;
-    }
-    setPreviewAttempted(true);
-    const response = await callPaymentApi("preview", "POST");
-    if (response && response.status >= 200 && response.status < 300) {
-      setPreviewData(response.body);
-      saveStorageValue(`${paymentKey("preview", activeRequestId)}.result`, JSON.stringify(response.body));
-      setNotice("Prévia registrada. Revise o resultado antes de solicitar a cotação.");
-    }
-  }
-
-  function isQuoteNotFound(response: PaymentApiResult | null) {
-    const body = response?.body;
-    if (response?.status !== 404 || !body || typeof body !== "object") return false;
-    return (body as ApiObject).code === "pricing_registry_quote_not_found";
-  }
-
-  function showQuote(response: PaymentApiResult, reconciled: boolean) {
-    if (response.status < 200 || response.status >= 300 || !response.body || typeof response.body !== "object") {
-      return false;
-    }
-    setQuoteData(response.body as ApiObject);
-    setNotice(reconciled ? "Cotação atualizada pela API." : "Cotação aprovada pela API.");
-    return true;
-  }
-
-  async function submitQuote() {
-    if (!activeRequestId) return;
-    if (!saveStorageValue(paymentKey("quote", activeRequestId), "1")) {
-      setError("Ative o armazenamento local antes de solicitar a cotação.");
-      return;
-    }
-    setQuoteAttempted(true);
-    setQuoteData(null);
-    const created = await callPaymentApi("quote", "POST", {});
-    if (created && showQuote(created, false)) return;
-    if (!isQuoteNotFound(created)) return;
-
-    const current = await callPaymentApi("quote", "GET");
-    if (current && showQuote(current, true)) return;
-    if (isQuoteNotFound(current)) {
-      removeStorageValue(paymentKey("quote", activeRequestId));
-      setQuoteAttempted(false);
-      setQuoteData(null);
-      setError("");
-      setNotice("A API confirmou que não há cotação registrada. A tentativa foi reconciliada; você pode solicitar novamente.");
-    }
-  }
-
-  async function runQuote() {
-    if (!activeRequestId) return;
-    if (!quoteAttempted) {
-      await submitQuote();
-      return;
-    }
-    const current = await callPaymentApi("quote", "GET");
-    if (current && showQuote(current, true)) return;
-    if (isQuoteNotFound(current)) {
-      setQuoteData(null);
-      await submitQuote();
-    }
-  }
-
-  async function runPix() {
-    if (!activeRequestId) return;
-    if (pixAttempted) {
-      const response = await callPaymentApi("pix", "GET");
-      if (response && response.status >= 200 && response.status < 300 && response.body && typeof response.body === "object") {
-        setPixData(response.body as ApiObject);
-        setNotice("Intenção PIX consultada pela API.");
-      }
-      return;
-    }
-    if (!legalConfirmed) {
-      setError("Confirme que o titular recebeu e leu os documentos legais correspondentes aos hashes enviados.");
-      return;
-    }
-    const sourceEvidence = legalEvidence;
-    if (!isLegalEvidence(sourceEvidence)) {
-      setError("Os documentos legais oficiais ainda não foram carregados.");
-      return;
-    }
-    const evidence = legalPayload(sourceEvidence);
-    const payer = !payerRegistered && payerName.trim() && payerDocument.trim()
-      ? { name: payerName.trim(), document: payerDocument.trim() }
-      : undefined;
-    if (!saveStorageValue(paymentKey("pix", activeRequestId), "1")) {
-      setError("Ative o armazenamento local antes de iniciar uma cobrança PIX.");
-      return;
-    }
-    setPixAttempted(true);
-    const response = await callPaymentApi("pix", "POST", { ...evidence, ...(payer ? { payer } : {}) });
-    if (response && response.status >= 200 && response.status < 300 && response.body && typeof response.body === "object") {
-      setPixData(response.body as ApiObject);
-      if (payer) {
-        saveStorageValue("aferisai.payerRegistered", "1");
-        setPayerRegistered(true);
-        setPayerName("");
-        setPayerDocument("");
-      }
-      setNotice("PIX iniciado. Use o código ou QR para concluir o pagamento.");
-    } else if (response?.status === 409 && !payerRegistered) {
-      setPayerRegistered(false);
-      removeStorageValue("aferisai.payerRegistered");
-    }
-  }
-
-  async function runCredits() {
-    if (!activeRequestId || creditBusy) return;
-    if (!legalConfirmed) {
-      setError("Confirme que o titular recebeu e leu os documentos legais antes de pagar com créditos.");
-      return;
-    }
-    if (!isLegalEvidence(legalEvidence)) {
-      setError("Os documentos legais oficiais ainda não foram carregados.");
-      return;
-    }
-    setCreditBusy(true);
-    setError("");
-    try {
-      const response = await fetch(`${apiUrl}/api/registry-requests/${encodeURIComponent(activeRequestId)}/credits`, {
+      const response = await fetch(`${apiUrl}/api/orders/${encodeURIComponent(activeRequestId)}/payment`, {
         method: "POST",
         credentials: "include",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(legalPayload(legalEvidence)),
+        body: JSON.stringify({
+          method: paymentMethod,
+          ...(paymentMethod === "pix" ? { payer: {
+            name: payerName.trim(), document: payerDocument.trim(),
+          } } : {}),
+          legal_acceptance: { accepted: true, version: legalVersion },
+        }),
       });
       const body = await response.json().catch(() => null);
-      if (!response.ok) throw new Error(readError(body, "Não foi possível pagar com créditos."));
-      setCreditData(body as ApiObject);
-      setNotice("Pedido pago com créditos. Acompanhe o status técnico do registro.");
+      if (!response.ok) {
+        if (response.status === 401) setAuthState("disconnected");
+        setError(readError(body, "Não foi possível confirmar o pagamento."));
+        return;
+      }
+      const paymentResult = body && typeof body === "object" ? (body as ApiObject).payment as ApiObject : null;
+      setNotice("Pagamento iniciado. Atualize a ordem para acompanhar o resultado.");
+      await loadRequest(activeRequestId);
+      // A consulta agregada ainda não expõe um GET de crédito; preserve o
+      // resultado recém-criado para que o usuário veja o débito imediatamente.
+      setPixData(paymentResult);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Falha ao pagar com créditos.");
+      setError(reason instanceof Error ? reason.message : "Falha ao confirmar o pagamento.");
     } finally {
-      setCreditBusy(false);
+      setPaymentBusy("");
     }
   }
 
@@ -588,7 +355,7 @@ export default function Home() {
     setError("");
     setNotice("");
     try {
-      const response = await fetch(`${apiUrl}/api/registry-requests`, {
+      const response = await fetch(`${apiUrl}/api/orders`, {
         method: "POST",
         credentials: "include",
         headers: {
@@ -685,8 +452,6 @@ export default function Home() {
         credentials: "include",
       });
       setAuthState("disconnected");
-      removeStorageValue("aferisai.payerRegistered");
-      setPayerRegistered(false);
       setNotice("Sessão encerrada.");
     } catch {
       setError("Não foi possível encerrar a sessão.");
@@ -947,7 +712,7 @@ export default function Home() {
                   <div>
                     <span className="result-label">PRÓXIMA ETAPA</span>
                     <h3 id="payment-title">Cotação e pagamento</h3>
-                    <p>Consulte o custo e aprove a cotação antes de iniciar o pagamento.</p>
+                    <p>A API prepara a cotação e o pagamento em uma única ação segura.</p>
                   </div>
                   <span className="payment-step">02</span>
                 </div>
@@ -955,178 +720,59 @@ export default function Home() {
                 <div className="payment-step-card">
                   <div className="payment-card-heading">
                     <span className="payment-number">1</span>
-                    <div><strong>Prévia de custo</strong><small>Uma única consulta ao fornecedor</small></div>
+                    <div><strong>Resumo da ordem</strong><small>Prévia e cotação são tratadas pelo sistema</small></div>
                   </div>
-                  <button
-                    className="button button-secondary payment-button"
-                    type="button"
-                    onClick={() => void runPreview()}
-                    disabled={paymentBusy !== "" || previewAttempted || authState !== "connected"}
-                  >
-                    {paymentBusy === "preview" ? "Consultando…" : previewAttempted ? "Prévia enviada" : "Consultar custo"}
-                  </button>
-                  {previewAttempted && !previewData && (
-                    <p className="payment-hint">A tentativa já foi enviada. Consulte o pedido antes de decidir o próximo passo; não repita a prévia.</p>
-                  )}
-                  {previewData !== null && (
-                    <details className="response-details payment-response" open>
-                      <summary>Resultado da prévia</summary>
-                      <pre>{JSON.stringify(previewData, null, 2)}</pre>
-                    </details>
+                  {quoteData ? (
+                    <div className="quote-summary">
+                      <span className="result-label">VALOR DA COTAÇÃO</span>
+                      <strong>{formatAmount(quoteData.payable_cents)}</strong>
+                      <small>Status: {String(quoteData.status ?? "—")} · válida até {String(quoteData.expires_at ?? "—")}</small>
+                    </div>
+                  ) : (
+                    <p className="payment-hint">A cotação será preparada automaticamente ao confirmar o pagamento.</p>
                   )}
                 </div>
 
-                {(previewAttempted || quoteAttempted) && (
-                  <div className="payment-step-card">
-                    <div className="payment-card-heading">
-                      <span className="payment-number">2</span>
-                      <div><strong>Cotar pedido</strong><small>A API valida a prévia e retorna preço e validade</small></div>
-                    </div>
-                    <button
-                      className="button button-secondary payment-button"
-                      type="button"
-                      onClick={() => void runQuote()}
-                      disabled={paymentBusy !== "" || authState !== "connected" || (!quoteAttempted && !previewData)}
-                    >
-                      {paymentBusy === "quote" ? "Consultando…" : quoteAttempted ? "Consultar cotação" : previewData ? "Solicitar cotação" : "Aguardando prévia"}
-                    </button>
-                    {quoteData && (
-                      <div className="quote-summary">
-                        <span className="result-label">VALOR DA COTAÇÃO</span>
-                        <strong>{formatAmount(quoteData.payable_cents)}</strong>
-                        <small>Status: {String(quoteData.status ?? "—")} · válida até {String(quoteData.expires_at ?? "—")}</small>
-                      </div>
-                    )}
-                    {previewAttempted && !previewData && (
-                      <p className="payment-hint">A resposta da prévia não está disponível nesta sessão. A API valida se ela foi confirmada antes de aprovar a cotação.</p>
-                    )}
+                <div className="payment-step-card payment-methods">
+                  <div className="payment-card-heading">
+                    <span className="payment-number">2</span>
+                    <div><strong>Dados do pagador</strong><small>Usados somente para identificar a cobrança</small></div>
                   </div>
-                )}
-
-                {quoteData && (
-                  <div className="payment-step-card payment-methods">
-                    <div className="payment-card-heading">
-                      <span className="payment-number">3</span>
-                      <div><strong>Forma de pagamento</strong><small>Disponibilidade conforme OAuth delegado</small></div>
-                    </div>
-                    <div className="payment-method-row selected">
-                      <span className="method-icon pix-icon">P</span>
-                      <div><strong>PIX</strong><small>QR Code e código copia e cola</small></div>
-                      <span className="method-availability">Disponível</span>
-                    </div>
-                    {!payerRegistered ? (
-                      <div className="payer-profile-box">
-                        <div className="payment-card-heading">
-                          <span className="payment-number">A</span>
-                          <div><strong>Cadastro do pagador</strong><small>Será cadastrado na conta conectada junto com o primeiro PIX</small></div>
-                        </div>
-                        <label className="field">
-                          <span className="field-label">Nome civil</span>
-                          <input value={payerName} onChange={(event) => setPayerName(event.target.value)} placeholder="Nome completo" />
-                        </label>
-                        <label className="field">
-                          <span className="field-label">CPF ou CNPJ</span>
-                          <input value={payerDocument} onChange={(event) => setPayerDocument(event.target.value)} inputMode="numeric" placeholder="Somente números ou máscara" />
-                        </label>
-                        <p className="payment-hint">O cadastro fica vinculado à conta Aferisai. Depois desta etapa, outros pedidos usam o mesmo pagador e não pedem os dados novamente.</p>
-                        <button type="button" className="refresh-link" onClick={() => setPayerRegistered(true)}>
-                          Já tenho pagador cadastrado — continuar
-                        </button>
-                      </div>
-                    ) : (
-                      <div className="payer-profile-ready"><span>✓</span> Pagador cadastrado para esta conta</div>
-                    )}
-                    {!pixAttempted && (
-                      <div className="legal-evidence">
-                        <div className="legal-document-list">
-                          <span className="field-label">Documentos legais oficiais</span>
-                          {legalLoading && <span className="field-hint">Carregando documentos oficiais da Aferisai…</span>}
-                          {!legalLoading && legalEvidence && typeof legalEvidence.documents === "object" && (
-                            <>
-                              <span className="field-hint">Política jurídica {String(legalEvidence.legal_policy_version)} · hashes calculados a partir do texto publicado em aferis.ai</span>
-                              {legalDocumentNames.map((name) => {
-                                const digest = (legalEvidence.documents as ApiObject)[name] as ApiObject;
-                                return (
-                                  <div className="legal-document-row" key={name}>
-                                    <span>✓</span>
-                                    <strong>{name}</strong>
-                                    <small>v{String(digest?.version ?? "—")} · {String(digest?.sha256 ?? "").slice(0, 12)}…</small>
-                                  </div>
-                                );
-                              })}
-                            </>
-                          )}
-                          {!legalLoading && !legalEvidence && <span className="field-hint">Não foi possível carregar os documentos oficiais.</span>}
-                        </div>
-                        <label className="legal-confirmation">
-                          <input
-                            type="checkbox"
-                            checked={legalConfirmed}
-                            onChange={(event) => setLegalConfirmed(event.target.checked)}
-                          />
-                          <span>Confirmo que o titular recebeu e leu os documentos oficiais correspondentes a esta evidência.</span>
-                        </label>
-                      </div>
-                    )}
-                    <button
-                      className="button payment-button"
-                      type="button"
-                      onClick={() => void runPix()}
-                      disabled={paymentBusy !== "" || authState !== "connected" || legalLoading || (!payerRegistered && (!payerName.trim() || !payerDocument.trim())) || (!pixAttempted && (!legalConfirmed || !legalEvidence))}
-                    >
-                      {paymentBusy === "pix" ? "Processando…" : pixAttempted ? "Consultar PIX existente" : "Gerar PIX"}
-                    </button>
-                    {pixData && (
-                      <div className="pix-result">
-                        <div className="quote-summary">
-                          <span className="result-label">VALOR DO PIX</span>
-                          <strong>{formatAmount(pixData.amount_cents)}</strong>
-                          <small>Vencimento: {String(pixData.due_date ?? "—")}</small>
-                        </div>
-                        {typeof pixData.qr_image_base64 === "string" && (
-                          <img className="pix-qr" src={`data:image/png;base64,${pixData.qr_image_base64}`} alt="QR Code de pagamento PIX" />
-                        )}
-                        {typeof pixData.pix_payload === "string" && (
-                          <div className="field">
-                            <span className="field-label">PIX copia e cola</span>
-                            <textarea value={pixData.pix_payload} readOnly rows={3} />
-                            <button
-                              type="button"
-                              className="refresh-link"
-                              onClick={() => {
-                                void navigator.clipboard.writeText(String(pixData.pix_payload));
-                                setPixCopied(true);
-                              }}
-                            >
-                              {pixCopied ? "Código copiado" : "Copiar código PIX"}
-                            </button>
-                          </div>
-                        )}
-                      </div>
-                    )}
-                    <div className="payment-method-row selected">
-                      <span className="method-icon">C</span>
-                      <div><strong>Créditos Aferisai</strong><small>Débito único no saldo da conta conectada</small></div>
-                      <span className="method-availability">Disponível</span>
-                    </div>
-                    <button className="button button-secondary payment-button" type="button" onClick={() => void runCredits()} disabled={creditBusy || legalLoading || !legalEvidence}>
-                      {creditBusy ? "Processando créditos…" : "Pagar com créditos"}
-                    </button>
-                    {creditData && (
-                      <div className="quote-summary">
-                        <span className="result-label">PAGAMENTO CONFIRMADO</span>
-                        <strong>{formatAmount(creditData.amount_cents)}</strong>
-                        <small>Saldo após débito: {formatAmount(creditData.balance_cents)} · {String(creditData.payment_method ?? "credits")}</small>
-                      </div>
-                    )}
-                    <div className="payment-method-row unavailable">
-                      <span className="method-icon">▣</span>
-                      <div><strong>Cartão de crédito ou débito</strong><small>Ainda não publicado no contrato delegado</small></div>
-                      <span className="method-availability">Indisponível</span>
-                    </div>
-                    <p className="payment-hint">PIX e créditos usam Bearer delegado. O escopo necessário para créditos é `payment:credits`; cartão ainda exige outro fluxo.</p>
-                  </div>
-                )}
+                  {paymentMethod === "pix" && <div className="payer-grid">
+                    <label className="field"><span className="field-label">Nome completo <span className="required">*</span></span><input value={payerName} onChange={(event) => setPayerName(event.target.value)} autoComplete="name" /></label>
+                    <label className="field"><span className="field-label">CPF/CNPJ <span className="required">*</span></span><input value={payerDocument} onChange={(event) => setPayerDocument(event.target.value)} inputMode="numeric" autoComplete="off" /></label>
+                  </div>}
+                  <button type="button" className={`payment-method-row${paymentMethod === "pix" ? " selected" : ""}`} onClick={() => setPaymentMethod("pix")}>
+                    <span className="method-icon pix-icon">P</span>
+                    <div><strong>PIX</strong><small>QR Code e código copia e cola</small></div>
+                    <span className="method-availability">Disponível</span>
+                  </button>
+                  <button type="button" className={`payment-method-row${paymentMethod === "credits" ? " selected" : ""}`} onClick={() => setPaymentMethod("credits")}>
+                    <span className="method-icon credits-icon">C</span>
+                    <div><strong>Créditos</strong><small>Debita o saldo confirmado da conta</small></div>
+                    <span className="method-availability">Disponível</span>
+                  </button>
+                  <label className="legal-confirmation">
+                    <input type="checkbox" checked={legalConfirmed} onChange={(event) => setLegalConfirmed(event.target.checked)} />
+                    <span>Confirmo o aceite dos documentos legais oficiais.</span>
+                  </label>
+                  <p className="payment-hint">A AferisAI mantém o catálogo e calcula os hashes legais automaticamente{legalVersion ? ` (versão ${legalVersion})` : "."}</p>
+                  <button
+                    className="button payment-button"
+                    type="button"
+                    onClick={() => void runPayment()}
+                    disabled={paymentBusy !== "" || authState !== "connected" || !legalVersion || !legalConfirmed}
+                  >
+                    {paymentBusy === "payment" ? "Preparando pagamento…" : pixData ? "Atualizar pagamento" : paymentMethod === "pix" ? "Confirmar e gerar PIX" : "Confirmar e debitar créditos"}
+                  </button>
+                  {pixData && (
+                    paymentMethod === "pix" ? <div className="pix-result">
+                      <div className="quote-summary"><span className="result-label">VALOR DO PIX</span><strong>{formatAmount(pixData.amount_cents)}</strong><small>Vencimento: {String(pixData.due_date ?? "—")}</small></div>
+                      {typeof pixData.qr_image_base64 === "string" && <img className="pix-qr" src={`data:image/png;base64,${pixData.qr_image_base64}`} alt="QR Code de pagamento PIX" />}
+                      {typeof pixData.pix_payload === "string" && <div className="field"><span className="field-label">PIX copia e cola</span><textarea value={pixData.pix_payload} readOnly rows={3} /><button type="button" className="refresh-link" onClick={() => { void navigator.clipboard.writeText(String(pixData.pix_payload)); setPixCopied(true); }}>{pixCopied ? "Código copiado" : "Copiar código PIX"}</button></div>}
+                    </div> : <div className="pix-result credit-result"><span className="result-label">CRÉDITOS DEBITADOS</span><strong>{formatAmount(pixData.amount_cents)}</strong><small>Pagamento confirmado. Saldo restante: {formatAmount(pixData.balance_cents)}</small></div>
+                  )}
+                </div>
               </section>
             )}
 

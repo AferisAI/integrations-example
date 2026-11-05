@@ -1,92 +1,83 @@
-import asyncio
-import hashlib
-import html
-import re
-from html.parser import HTMLParser
-from time import monotonic
+import json
+from typing import Any, Protocol
 
-import httpx
 from fastapi import HTTPException
 
+from app.models.orders import LegalAcceptanceInput
 
-LEGAL_POLICY_VERSION = "2.0"
-DOCUMENT_URLS = {
-    "politica-de-privacidade": "https://aferis.ai/legal/politica-de-privacidade",
-    "termos-de-servico": "https://aferis.ai/legal/termos-de-servico",
-    "politica-de-cancelamento-e-reembolso": "https://aferis.ai/legal/politica-de-cancelamento-e-reembolso",
-    "exclusao-de-dados": "https://aferis.ai/legal/exclusao-de-dados",
-    "aviso-de-cookies": "https://aferis.ai/legal/aviso-de-cookies",
-}
+class LegalCatalogGateway(Protocol):
+    async def get_legal_documents(self, access_token: str): ...
 
 
-class _ArticleText(HTMLParser):
-    def __init__(self) -> None:
-        super().__init__()
-        self.inside_article = False
-        self.skip_depth = 0
-        self.parts: list[str] = []
+class LegalDocumentService:
+    """Reads the canonical legal catalog from Aferis.
 
-    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        classes = dict(attrs).get("class", "") or ""
-        if tag == "article":
-            self.inside_article = True
-        if self.inside_article and tag in {"script", "style", "noscript"}:
-            self.skip_depth += 1
-        if self.inside_article and self.skip_depth == 0 and tag in {
-            "h1", "h2", "h3", "h4", "p", "li", "span", "a"
-        }:
-            self.parts.append(" ")
+    Aferis owns the canonical representation and SHA values. This integration
+    deliberately does not keep document contents locally or derive hashes.
+    """
 
-    def handle_endtag(self, tag: str) -> None:
-        if self.inside_article and tag in {"script", "style", "noscript"} and self.skip_depth:
-            self.skip_depth -= 1
-        if tag == "article":
-            self.inside_article = False
+    def __init__(self, gateway: LegalCatalogGateway) -> None:
+        self.gateway = gateway
 
-    def handle_data(self, data: str) -> None:
-        if self.inside_article and self.skip_depth == 0:
-            self.parts.append(data)
+    async def catalog(self, access_token: str) -> dict[str, Any]:
+        response = await self.gateway.get_legal_documents(access_token)
+        if not 200 <= response.status_code < 300:
+            raise HTTPException(
+                status_code=response.status_code,
+                detail="Catálogo legal da Aferis não está disponível.",
+            )
 
-
-def _rendered_text(markup: str) -> str:
-    parser = _ArticleText()
-    parser.feed(markup)
-    text = html.unescape("".join(parser.parts))
-    return re.sub(r"\s+", " ", text).strip()
-
-
-class LegalDocuments:
-    def __init__(self) -> None:
-        self._cached: dict[str, object] | None = None
-        self._cached_at = 0.0
-
-    async def current(self) -> dict[str, object]:
-        if self._cached and monotonic() - self._cached_at < 300:
-            return self._cached
         try:
-            async with httpx.AsyncClient(timeout=10, follow_redirects=True) as client:
-                responses = await asyncio.gather(
-                    *(client.get(url) for url in DOCUMENT_URLS.values())
-                )
-        except (httpx.HTTPError, OSError) as error:
-            raise HTTPException(status_code=503, detail="Não foi possível carregar os documentos legais oficiais.") from error
+            body = json.loads(response.body.decode("utf-8"))
+        except (AttributeError, UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise HTTPException(
+                status_code=502,
+                detail="Catálogo legal da Aferis retornou uma resposta inválida.",
+            ) from error
+        return _validate_catalog(body)
 
-        documents: dict[str, dict[str, str]] = {}
-        for name, response in zip(DOCUMENT_URLS, responses, strict=True):
-            if response.status_code >= 400:
-                raise HTTPException(status_code=503, detail="Documento legal oficial indisponível.")
-            text = _rendered_text(response.text)
-            version_match = re.search(r"Versão\s+([0-9A-Za-z][0-9A-Za-z.-]{0,31})", text)
-            if not version_match or not text:
-                raise HTTPException(status_code=503, detail="Não foi possível identificar a versão legal oficial.")
-            documents[name] = {
-                "version": version_match.group(1),
-                "sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
-                "url": DOCUMENT_URLS[name],
-            }
-        self._cached = {"legal_policy_version": LEGAL_POLICY_VERSION, "documents": documents}
-        self._cached_at = monotonic()
-        return self._cached
+    async def build_evidence(
+        self, access_token: str, acceptance: LegalAcceptanceInput
+    ) -> dict[str, object]:
+        if not acceptance.accepted:
+            raise HTTPException(status_code=422, detail="O aceite legal é obrigatório.")
+
+        catalog = await self.catalog(access_token)
+        version = catalog["legal_policy_version"]
+        if acceptance.version != version:
+            raise HTTPException(status_code=409, detail="A versão dos documentos legais mudou.")
+        return {
+            "legal_policy_version": version,
+            "documents": {
+                slug: {
+                    "version": document["version"],
+                    "sha256": document["sha256"],
+                }
+                for slug, document in catalog["documents"].items()
+            },
+        }
 
 
-legal_documents = LegalDocuments()
+def _validate_catalog(body: Any) -> dict[str, Any]:
+    if not isinstance(body, dict) or not isinstance(body.get("legal_policy_version"), str):
+        raise HTTPException(
+            status_code=502,
+            detail="Catálogo legal da Aferis não contém uma versão válida.",
+        )
+
+    documents = body.get("documents")
+    if not isinstance(documents, dict) or not documents:
+        raise HTTPException(
+            status_code=502,
+            detail="Catálogo legal da Aferis não contém documentos.",
+        )
+    for slug, document in documents.items():
+        if not isinstance(document, dict) or not all(
+            isinstance(document.get(field), str) and document[field]
+            for field in ("version", "sha256")
+        ):
+            raise HTTPException(
+                status_code=502,
+                detail="Catálogo legal da Aferis contém um documento inválido.",
+            )
+    return {"legal_policy_version": body["legal_policy_version"], "documents": documents}
