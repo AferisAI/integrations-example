@@ -104,6 +104,7 @@ function formatAmount(cents: unknown) {
 
 export default function Home() {
   const [authState, setAuthState] = useState<AuthState>("checking");
+  const [showTracking, setShowTracking] = useState(false);
   const [product, setProduct] = useState<Product>("visualizacao");
   const [selectedOffice, setSelectedOffice] = useState<RegistryOffice | null>(null);
   const [registrationText, setRegistrationText] = useState("");
@@ -175,8 +176,8 @@ export default function Home() {
         return body;
       })
       .then((body: unknown) => {
-        if (body && typeof body === "object" && typeof (body as ApiObject).version === "string") {
-          setLegalVersion((body as ApiObject).version as string);
+        if (body && typeof body === "object" && typeof (body as ApiObject).legal_policy_version === "string") {
+          setLegalVersion((body as ApiObject).legal_policy_version as string);
           return;
         }
         setError("O catálogo legal da Aferis retornou uma versão inválida.");
@@ -471,9 +472,11 @@ export default function Home() {
     <div className="app-shell">
       <header className="topbar">
         <a className="brand" href="/" aria-label="Aferisai, início">
-          <span className="brand-mark">A</span>
-          <span className="brand-name">aferis<span>ai</span></span>
-          <span className="brand-divider" />
+          <img
+            src="/aferis-logo.svg"
+            alt="AferisAI"
+            className="brand-logo-image"
+          />
           <span className="brand-area">Partner API</span>
         </a>
         <div className="topbar-actions">
@@ -500,16 +503,11 @@ export default function Home() {
       <main className="page-content">
         <section className="page-heading">
           <div>
-            <div className="breadcrumb"><span>Integrações</span><span>/</span><strong>Pedidos registrais</strong></div>
             <p className="eyebrow">Área do parceiro</p>
             <h1>Pedidos registrais</h1>
             <p className="page-subtitle">
-              Crie uma solicitação e acompanhe o processamento pela API Aferisai.
+              Demonstração limpa do fluxo: criação, acompanhamento e pagamento.
             </p>
-          </div>
-          <div className="heading-note">
-            <span className="note-icon">↗</span>
-            <span>OAuth 2.0 <b>·</b> Ambiente configurável</span>
           </div>
         </section>
 
@@ -544,12 +542,11 @@ export default function Home() {
                 <h2>Novo pedido</h2>
                 <p>Preencha os dados do registro que deseja consultar.</p>
               </div>
-              <span className="step-label">01 <span>/</span> 02</span>
             </div>
 
             <form className="request-form" onSubmit={createRequest}>
               <label className="field">
-                <span className="field-label">Produto <span className="required">*</span></span>
+                <span className="field-label field-label-lg">Produto <span className="required">*</span></span>
                 <select value={product} onChange={(event) => setProduct(event.target.value as Product)}>
                   <option value="visualizacao">Visualização</option>
                   <option value="inteiro_teor_simples">Inteiro teor simples</option>
@@ -559,7 +556,7 @@ export default function Home() {
               </label>
 
               <div className="field">
-                <span className="field-label">Cartório <span className="required">*</span></span>
+                <span className="field-label field-label-lg">Cartório <span className="required">*</span></span>
                 {selectedOffice ? (
                   <div className="selected-office">
                     <span className="selected-office-mark">⌖</span>
@@ -590,7 +587,7 @@ export default function Home() {
               </div>
 
               <label className="field">
-                <span className="field-label">Matrículas <span className="required">*</span></span>
+                <span className="field-label field-label-lg">Matrículas <span className="required">*</span></span>
                 <textarea
                   value={registrationText}
                   onChange={(event) => setRegistrationText(event.target.value)}
@@ -606,7 +603,7 @@ export default function Home() {
               </label>
 
               <label className="field">
-                <span className="field-label">Contexto de endereço <span className="optional">Opcional</span></span>
+                <span className="field-label field-label-lg">Endereço <span className="optional">Opcional</span></span>
                 <input
                   value={addressContext}
                   onChange={(event) => setAddressContext(event.target.value)}
@@ -645,6 +642,16 @@ export default function Home() {
             </form>
           </section>
 
+          <div className="tracking-panel-slot">
+            {showTracking ? (
+            <>
+              <button
+                type="button"
+                className="button button-secondary"
+                onClick={() => setShowTracking(false)}
+              >
+                Voltar ao resumo
+              </button>
           <aside className="panel tracking-panel">
             <div className="panel-heading">
               <div className="panel-icon icon-violet">⌕</div>
@@ -781,6 +788,67 @@ export default function Home() {
               <p>O status é técnico. Consulte novamente pelo ID para acompanhar as atualizações.</p>
             </div>
           </aside>
+            </>
+          ) : (
+          <aside className="panel tracking-panel summary-panel">
+            <div className="panel-heading">
+              <div className="panel-icon icon-violet">☰</div>
+              <div>
+                <h2>Resumo do pedido</h2>
+                <p>Confira suas escolhas antes de continuar.</p>
+              </div>
+              <button
+                type="button"
+                className="button button-small"
+                onClick={() => {
+                  setShowTracking(true);
+                  if (activeRequestId) {
+                    void loadRequest(activeRequestId);
+                  }
+                }}
+              >
+                Acompanhar pedido
+              </button>
+            </div>
+
+            <dl className="summary-choices">
+              <div>
+                <dt>Produto</dt>
+                <dd>
+                  {product === "visualizacao"
+                    ? "Visualização"
+                    : product === "inteiro_teor_simples"
+                    ? "Inteiro teor simples"
+                    : "Inteiro teor"}
+                </dd>
+              </div>
+              <div>
+                <dt>Cartório</dt>
+                <dd>{selectedOffice ? selectedOffice.name : "Não selecionado"}</dd>
+              </div>
+              <div>
+                <dt>Matrículas</dt>
+                <dd>
+                  {registrationText.split(/[\s,;]+/).filter(Boolean).length || 0}
+                </dd>
+              </div>
+              <div>
+                <dt>Endereço</dt>
+                <dd>{addressContext.trim() || "—"}</dd>
+              </div>
+              <div>
+                <dt>Legal</dt>
+                <dd>{legalVersion || "Carregando…"}</dd>
+              </div>
+            </dl>
+
+            <p className="payment-hint">
+              Use “Acompanhar pedido” para consultar status e finalizar o pagamento.
+            </p>
+          </aside>
+          )}
+          </div>
+
         </div>
 
         {directoryOpen && (
