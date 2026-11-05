@@ -75,25 +75,16 @@ class RegistryApi:
             access_token,
         )
 
-    async def get_payer_profile(
-        self, access_token: str, headers: dict[str, str] | None = None
+    async def create_credits(
+        self, access_token: str, operation_id: str, payload: dict[str, Any]
     ) -> JSONResponse:
         return await self._request(
-            "GET", "/v1/payments/payer-profile", access_token, headers=headers or {}
+            "POST",
+            f"/v1/partner/registry-requests/{operation_id}/credits",
+            access_token,
+            json=payload,
         )
 
-    async def create_payer_profile(
-        self, access_token: str, payload: dict[str, Any], headers: dict[str, str] | None = None
-    ) -> JSONResponse:
-        return await self._request(
-            "POST", "/v1/payments/payer-profile", access_token,
-            headers=headers or {}, json=payload
-        )
-
-    async def renew_user_csrf(self, headers: dict[str, str]) -> JSONResponse:
-        return await self._request(
-            "POST", "/v1/users/sessions/current/csrf", headers=headers
-        )
 
     async def _request(
         self,

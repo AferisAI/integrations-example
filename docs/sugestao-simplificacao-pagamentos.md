@@ -2,7 +2,16 @@
 
 ## Resumo
 
-O fluxo atual funciona para criar pedidos, consultar custo, aprovar cotação e iniciar PIX usando OAuth delegado. Crédito, cartão, saldo e recarga de créditos aparecem no OpenAPI, mas pertencem a outro modelo de autenticação: sessão própria do usuário Aferisai com cookie, Origin e CSRF. Portanto, esses meios não estão disponíveis para esta integração OAuth.
+O fluxo atual funciona para criar pedidos, consultar custo, aprovar cotação e iniciar PIX usando OAuth delegado. O contrato novo também permite pagar com créditos e cadastrar o pagador no mesmo POST do PIX. Cartão, saldo e recarga de créditos continuam fora do fluxo OAuth delegado.
+
+## Revisão do `api-1.yaml`
+
+O contrato novo já aplicou duas recomendações importantes desta análise:
+
+- `POST /v1/partner/registry-requests/{id}/pix` aceita `payer` no mesmo corpo. O cadastro do nome e CPF/CNPJ é feito na conta conectada, sem uma segunda sessão de usuário.
+- `POST /v1/partner/registry-requests/{id}/credits` está disponível com Bearer delegado e escopo `payment:credits`.
+
+O contrato ainda não adiciona GET de prévia, idempotência explícita para a prévia, catálogo de documentos legais, estado único de checkout ou cartão delegado. A aplicação foi sincronizada para usar o cadastro inline do pagador e oferecer créditos; cartão permanece indisponível.
 
 A complexidade principal vem de três pontos: dois modelos de autenticação para pagamentos, operações com resultado incerto sem consulta equivalente em todas as etapas e aceite jurídico enviado como hashes que o integrador precisa obter por fora da API.
 
@@ -14,7 +23,7 @@ A complexidade principal vem de três pontos: dois modelos de autenticação par
 | Prévia de custo | `POST /v1/partner/registry-requests/{id}/preview` | Sim | Alta | Uma tentativa. Se a resposta ficar incerta, a especificação manda reconciliar e não repetir; não há `GET preview` para o parceiro. |
 | Cotação | `POST` e `GET /v1/partner/registry-requests/{id}/quote` | Sim | Média/alta | O POST exige prévia confirmada. `pricing_registry_quote_not_found` precisa ser distinguido de pedido não autorizado ou inexistente. |
 | PIX do pedido | `POST` e `GET /v1/partner/registry-requests/{id}/pix` | Sim | Média/alta | É o único pagamento registral exposto ao parceiro. Requer aceite e hash de cinco documentos legais. Resultado incerto deve ser consultado por GET, sem repetir POST. |
-| Pagar com créditos | `POST /v1/payments/credits/registry-requests/{id}` | Não | Indisponível no OAuth | Exige sessão própria Aferisai e CSRF. |
+| Pagar com créditos | `POST /v1/partner/registry-requests/{id}/credits` | Sim, `payment:credits` | Média | Debita o saldo confirmado da conta conectada; exige os documentos legais. |
 | Saldo e extrato de créditos | `GET /v1/payments/credits` e `/movements` | Não | Indisponível no OAuth | Também exigem sessão própria. |
 | Recarga de créditos via PIX | `POST /v1/payments/credits/topups` | Não | Indisponível no OAuth | Além da sessão, exige valor e `request_id` UUID para idempotência. |
 | Cartão de crédito/débito | `POST` e `GET /v1/payments/registry-requests/{id}/card` | Não | Indisponível no OAuth | Exige sessão própria. Há modo hospedado e modo direto; o hospedado reduz a exposição de dados de cartão pela integração. |
@@ -67,11 +76,11 @@ Com os recursos atuais, o caminho seguro é:
 
 ## Recomendações para este projeto
 
-1. **Agora:** manter o exemplo restrito ao PIX delegado; exibir crédito e cartão como indisponíveis e explicar que exigem outra autenticação.
+1. **Agora:** usar PIX e créditos delegados; exibir cartão como indisponível porque ainda não está no contrato delegado.
 2. **Próxima melhoria:** substituir os marcadores `localStorage` por uma tabela simples de operações no servidor, com chave por titular, aplicação, pedido e etapa. Isso preserva a reconciliação após refresh ou troca de navegador.
-3. **Quando a API oferecer os recursos:** trocar o JSON manual de hashes por um catálogo legal oficial e adicionar métodos de pagamento conforme os escopos delegados publicados.
+3. **Quando a API oferecer os recursos:** trocar a busca direta das páginas legais por um catálogo legal oficial e adicionar cartão conforme os escopos delegados publicados.
 4. **Para cartão:** preferir checkout hospedado. O modo direto aumenta a responsabilidade de segurança e o escopo de conformidade da aplicação.
 
 ## Decisão pendente
 
-Antes de implementar créditos e cartão neste exemplo, é necessário confirmar com a Aferisai se haverá endpoints delegados para esses meios ou se o produto deve iniciar e manter uma sessão própria `UserSession`. A especificação consultada não permite fazer essas compras usando o Bearer OAuth atual.
+Antes de implementar cartão neste exemplo, é necessário confirmar com a Aferisai um endpoint delegado e seu escopo. O `api-1.yaml` já resolve créditos e cadastro inline do pagador, mas não publica cartão delegado.

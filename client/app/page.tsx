@@ -164,6 +164,18 @@ function isLegalEvidence(value: unknown): value is LegalEvidence {
   });
 }
 
+function legalPayload(value: LegalEvidence) {
+  return {
+    legal_policy_version: value.legal_policy_version,
+    documents: Object.fromEntries(
+      legalDocumentNames.map((name) => {
+        const digest = value.documents[name];
+        return [name, { version: digest.version, sha256: digest.sha256 }];
+      }),
+    ),
+  };
+}
+
 export default function Home() {
   const [authState, setAuthState] = useState<AuthState>("checking");
   const [product, setProduct] = useState<Product>("visualizacao");
@@ -177,17 +189,17 @@ export default function Home() {
   const [submitting, setSubmitting] = useState(false);
   const [loadingRequest, setLoadingRequest] = useState(false);
   const [paymentBusy, setPaymentBusy] = useState<PaymentAction | "">("");
+  const [creditBusy, setCreditBusy] = useState(false);
+  const [creditData, setCreditData] = useState<ApiObject | null>(null);
   const [previewAttempted, setPreviewAttempted] = useState(false);
   const [previewData, setPreviewData] = useState<unknown>(null);
   const [quoteAttempted, setQuoteAttempted] = useState(false);
   const [quoteData, setQuoteData] = useState<ApiObject | null>(null);
   const [pixAttempted, setPixAttempted] = useState(false);
   const [pixData, setPixData] = useState<ApiObject | null>(null);
-  const [payerProfile, setPayerProfile] = useState<ApiObject | null>(null);
   const [payerName, setPayerName] = useState("");
   const [payerDocument, setPayerDocument] = useState("");
-  const [payerCsrf, setPayerCsrf] = useState("");
-  const [payerBusy, setPayerBusy] = useState(false);
+  const [payerRegistered, setPayerRegistered] = useState(false);
   const [legalEvidence, setLegalEvidence] = useState<ApiObject | null>(null);
   const [legalLoading, setLegalLoading] = useState(false);
   const [legalConfirmed, setLegalConfirmed] = useState(false);
@@ -205,6 +217,10 @@ export default function Home() {
   const [officesSearched, setOfficesSearched] = useState(false);
   const [searchingOffices, setSearchingOffices] = useState(false);
   const [officeError, setOfficeError] = useState("");
+
+  useEffect(() => {
+    setPayerRegistered(storageValue("aferisai.payerRegistered") === "1");
+  }, [authState]);
 
   useEffect(() => {
     let active = true;
@@ -277,35 +293,6 @@ export default function Home() {
       active = false;
     };
   }, [quoteData, activeRequestId, legalEvidence]);
-
-  useEffect(() => {
-    if (authState !== "connected") {
-      setPayerProfile(null);
-      setPayerCsrf("");
-      return;
-    }
-    let active = true;
-    fetch(`${apiUrl}/api/payer-profile`, { credentials: "include" })
-      .then(async (response) => {
-        const body = await response.json().catch(() => null);
-        if (response.ok && active) setPayerProfile(body as ApiObject);
-        else if (response.status === 404) {
-          const csrfResponse = await fetch(`${apiUrl}/api/payer-profile/csrf`, { method: "POST", credentials: "include" });
-          const csrfBody = await csrfResponse.json().catch(() => null);
-          if (active && csrfResponse.ok && csrfBody && typeof csrfBody.csrf_token === "string") setPayerCsrf(csrfBody.csrf_token);
-        } else {
-          throw new Error(response.status === 401 || response.status === 403
-            ? "O cadastro do pagador exige uma sessão própria Aferisai. Faça o cadastro na conta Aferisai e depois volte para gerar o PIX."
-            : readError(body, "Não foi possível consultar o pagador."));
-        }
-      })
-      .catch((reason) => {
-        if (active) setError(reason instanceof Error ? reason.message : "Falha ao consultar o pagador.");
-      });
-    return () => {
-      active = false;
-    };
-  }, [authState]);
 
   useEffect(() => {
     if (!directoryOpen) return;
@@ -524,10 +511,6 @@ export default function Home() {
 
   async function runPix() {
     if (!activeRequestId) return;
-    if (!payerProfile) {
-      setError("Cadastre o pagador desta conta antes de gerar o PIX.");
-      return;
-    }
     if (pixAttempted) {
       const response = await callPaymentApi("pix", "GET");
       if (response && response.status >= 200 && response.status < 300 && response.body && typeof response.body === "object") {
@@ -545,55 +528,58 @@ export default function Home() {
       setError("Os documentos legais oficiais ainda não foram carregados.");
       return;
     }
-  const sourceDocuments = sourceEvidence.documents;
-    const evidence = {
-      legal_policy_version: sourceEvidence.legal_policy_version,
-      documents: Object.fromEntries(
-        legalDocumentNames.map((name) => {
-          const digest = sourceDocuments[name];
-          return [name, { version: digest.version, sha256: digest.sha256 }];
-        }),
-      ),
-    };
+    const evidence = legalPayload(sourceEvidence);
+    const payer = !payerRegistered && payerName.trim() && payerDocument.trim()
+      ? { name: payerName.trim(), document: payerDocument.trim() }
+      : undefined;
     if (!saveStorageValue(paymentKey("pix", activeRequestId), "1")) {
       setError("Ative o armazenamento local antes de iniciar uma cobrança PIX.");
       return;
     }
     setPixAttempted(true);
-    const response = await callPaymentApi("pix", "POST", evidence);
+    const response = await callPaymentApi("pix", "POST", { ...evidence, ...(payer ? { payer } : {}) });
     if (response && response.status >= 200 && response.status < 300 && response.body && typeof response.body === "object") {
       setPixData(response.body as ApiObject);
+      if (payer) {
+        saveStorageValue("aferisai.payerRegistered", "1");
+        setPayerRegistered(true);
+        setPayerName("");
+        setPayerDocument("");
+      }
       setNotice("PIX iniciado. Use o código ou QR para concluir o pagamento.");
+    } else if (response?.status === 409 && !payerRegistered) {
+      setPayerRegistered(false);
+      removeStorageValue("aferisai.payerRegistered");
     }
   }
 
-  async function savePayerProfile() {
-    setPayerBusy(true);
+  async function runCredits() {
+    if (!activeRequestId || creditBusy) return;
+    if (!legalConfirmed) {
+      setError("Confirme que o titular recebeu e leu os documentos legais antes de pagar com créditos.");
+      return;
+    }
+    if (!isLegalEvidence(legalEvidence)) {
+      setError("Os documentos legais oficiais ainda não foram carregados.");
+      return;
+    }
+    setCreditBusy(true);
     setError("");
     try {
-      const response = await fetch(`${apiUrl}/api/payer-profile`, {
+      const response = await fetch(`${apiUrl}/api/registry-requests/${encodeURIComponent(activeRequestId)}/credits`, {
         method: "POST",
         credentials: "include",
-        headers: {
-          "Content-Type": "application/json",
-          ...(payerCsrf ? { "X-CSRF-Token": payerCsrf } : {}),
-        },
-        body: JSON.stringify({ name: payerName, document: payerDocument }),
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(legalPayload(legalEvidence)),
       });
       const body = await response.json().catch(() => null);
-      if (!response.ok) {
-        throw new Error(response.status === 401 || response.status === 403
-          ? "A API não permite cadastrar o pagador com este OAuth delegado. Cadastre-o na sessão própria Aferisai e depois volte para gerar o PIX."
-          : readError(body, "Não foi possível cadastrar o pagador."));
-      }
-      setPayerProfile(body as ApiObject);
-      setPayerName("");
-      setPayerDocument("");
-      setNotice("Pagador cadastrado. Agora você pode gerar o PIX.");
+      if (!response.ok) throw new Error(readError(body, "Não foi possível pagar com créditos."));
+      setCreditData(body as ApiObject);
+      setNotice("Pedido pago com créditos. Acompanhe o status técnico do registro.");
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Falha ao cadastrar o pagador.");
+      setError(reason instanceof Error ? reason.message : "Falha ao pagar com créditos.");
     } finally {
-      setPayerBusy(false);
+      setCreditBusy(false);
     }
   }
 
@@ -699,6 +685,8 @@ export default function Home() {
         credentials: "include",
       });
       setAuthState("disconnected");
+      removeStorageValue("aferisai.payerRegistered");
+      setPayerRegistered(false);
       setNotice("Sessão encerrada.");
     } catch {
       setError("Não foi possível encerrar a sessão.");
@@ -1026,11 +1014,11 @@ export default function Home() {
                       <div><strong>PIX</strong><small>QR Code e código copia e cola</small></div>
                       <span className="method-availability">Disponível</span>
                     </div>
-                    {!payerProfile ? (
+                    {!payerRegistered ? (
                       <div className="payer-profile-box">
                         <div className="payment-card-heading">
                           <span className="payment-number">A</span>
-                          <div><strong>Cadastro do pagador</strong><small>A API exige nome e CPF/CNPJ antes da primeira cobrança</small></div>
+                          <div><strong>Cadastro do pagador</strong><small>Será cadastrado na conta conectada junto com o primeiro PIX</small></div>
                         </div>
                         <label className="field">
                           <span className="field-label">Nome civil</span>
@@ -1040,10 +1028,10 @@ export default function Home() {
                           <span className="field-label">CPF ou CNPJ</span>
                           <input value={payerDocument} onChange={(event) => setPayerDocument(event.target.value)} inputMode="numeric" placeholder="Somente números ou máscara" />
                         </label>
-                        <button className="button button-secondary payment-button" type="button" onClick={() => void savePayerProfile()} disabled={payerBusy || !payerName.trim() || !payerDocument.trim()}>
-                          {payerBusy ? "Cadastrando…" : "Cadastrar pagador"}
-                        </button>
                         <p className="payment-hint">O cadastro fica vinculado à conta Aferisai. Depois desta etapa, outros pedidos usam o mesmo pagador e não pedem os dados novamente.</p>
+                        <button type="button" className="refresh-link" onClick={() => setPayerRegistered(true)}>
+                          Já tenho pagador cadastrado — continuar
+                        </button>
                       </div>
                     ) : (
                       <div className="payer-profile-ready"><span>✓</span> Pagador cadastrado para esta conta</div>
@@ -1084,7 +1072,7 @@ export default function Home() {
                       className="button payment-button"
                       type="button"
                       onClick={() => void runPix()}
-                      disabled={paymentBusy !== "" || authState !== "connected" || legalLoading || !payerProfile || (!pixAttempted && (!legalConfirmed || !legalEvidence))}
+                      disabled={paymentBusy !== "" || authState !== "connected" || legalLoading || (!payerRegistered && (!payerName.trim() || !payerDocument.trim())) || (!pixAttempted && (!legalConfirmed || !legalEvidence))}
                     >
                       {paymentBusy === "pix" ? "Processando…" : pixAttempted ? "Consultar PIX existente" : "Gerar PIX"}
                     </button>
@@ -1116,17 +1104,27 @@ export default function Home() {
                         )}
                       </div>
                     )}
-                    <div className="payment-method-row unavailable">
+                    <div className="payment-method-row selected">
                       <span className="method-icon">C</span>
-                      <div><strong>Créditos Aferisai</strong><small>Requer sessão própria de usuário</small></div>
-                      <span className="method-availability">Indisponível</span>
+                      <div><strong>Créditos Aferisai</strong><small>Débito único no saldo da conta conectada</small></div>
+                      <span className="method-availability">Disponível</span>
                     </div>
+                    <button className="button button-secondary payment-button" type="button" onClick={() => void runCredits()} disabled={creditBusy || legalLoading || !legalEvidence}>
+                      {creditBusy ? "Processando créditos…" : "Pagar com créditos"}
+                    </button>
+                    {creditData && (
+                      <div className="quote-summary">
+                        <span className="result-label">PAGAMENTO CONFIRMADO</span>
+                        <strong>{formatAmount(creditData.amount_cents)}</strong>
+                        <small>Saldo após débito: {formatAmount(creditData.balance_cents)} · {String(creditData.payment_method ?? "credits")}</small>
+                      </div>
+                    )}
                     <div className="payment-method-row unavailable">
                       <span className="method-icon">▣</span>
-                      <div><strong>Cartão de crédito ou débito</strong><small>Requer sessão própria de usuário</small></div>
+                      <div><strong>Cartão de crédito ou débito</strong><small>Ainda não publicado no contrato delegado</small></div>
                       <span className="method-availability">Indisponível</span>
                     </div>
-                    <p className="payment-hint">A API de parceiro aceita PIX com Bearer delegado. Créditos e cartão usam cookie de sessão Aferisai; não envie o token OAuth a essas rotas.</p>
+                    <p className="payment-hint">PIX e créditos usam Bearer delegado. O escopo necessário para créditos é `payment:credits`; cartão ainda exige outro fluxo.</p>
                   </div>
                 )}
               </section>

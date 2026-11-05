@@ -4,7 +4,7 @@ from urllib.parse import quote
 from fastapi import APIRouter, Body, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
 
-from app.models.payments import RegistryPixCheckoutInput
+from app.models.payments import RegistryCreditPurchaseInput, RegistryPixCheckoutInput
 from app.models.registry_request import RegistryRequestInput, is_uuid7
 from app.services.oauth_service import oauth_service
 from app.services.registry_api import registry_api
@@ -72,6 +72,17 @@ async def create_registry_pix(
 async def get_registry_pix(operation_id: str, request: Request) -> JSONResponse:
     return await registry_api.get_pix(
         oauth_service.access_token(request), _operation_id(operation_id)
+    )
+
+
+@router.post("/{operation_id}/credits")
+async def create_registry_credit_purchase(
+    operation_id: str, payload: RegistryCreditPurchaseInput, request: Request
+) -> JSONResponse:
+    return await registry_api.create_credits(
+        oauth_service.access_token(request),
+        _operation_id(operation_id),
+        payload.model_dump(),
     )
 
 
