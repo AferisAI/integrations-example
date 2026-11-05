@@ -1,17 +1,80 @@
 import secrets
+import time
 from typing import Any
 
-from authlib.integrations.starlette_client import OAuth
+from authlib.integrations.starlette_client import OAuth as StarletteOAuth
+from authlib.integrations.starlette_client.integration import StarletteIntegration
 from fastapi import HTTPException
 from starlette.requests import Request
 
 from app.core.settings import settings
 from app.repositories.token_store import token_store
 
-oauth = OAuth()
+
+class InMemoryStateCache:
+    """Armazenamento em memória para o estado temporário do OAuth.
+
+    O cache evita que o callback dependa exclusivamente do cookie de sessão
+    (que pode não ser enviado em alguns cenários de redirect cross-site),
+    mantendo o mesmo valor ``state`` emitido no redirect inicial.
+    """
+
+    def __init__(self) -> None:
+        self._values: dict[str, Any] = {}
+        self._expires: dict[str, float] = {}
+
+    async def get(self, key: str) -> Any | None:
+        value = self._values.get(key)
+        if value is None:
+            return None
+        expires_at = self._expires.get(key)
+        if expires_at is not None and expires_at < time.time():
+            self._values.pop(key, None)
+            self._expires.pop(key, None)
+            return None
+        return value
+
+    async def set(self, key: str, value: Any, expires_in: int | float | None = None) -> None:
+        self._values[key] = value
+        if expires_in:
+            self._expires[key] = time.time() + float(expires_in)
+
+    async def delete(self, key: str) -> None:
+        self._values.pop(key, None)
+        self._expires.pop(key, None)
+
+
+class RobustStarletteIntegration(StarletteIntegration):
+    """Permite recuperar o estado mesmo quando o cookie de sessão não chega."""
+
+    async def get_state_data(self, session, state):  # type: ignore[override]
+        key = f"_state_{self.name}_{state}"
+        if self.cache is not None:
+            try:
+                cached = await self._get_cache_data(key)
+            except Exception:  # pragma: no cover - defensive
+                cached = None
+            if cached:
+                return cached.get("data")
+        if session is not None:
+            session_value = session.get(key)
+            if session_value and isinstance(session_value, dict):
+                # Com cache, a sessão guarda apenas o marcador de expiração.
+                if "data" in session_value:
+                    return session_value.get("data")
+        return None
+
+
+class OAuth(StarletteOAuth):
+    framework_integration_cls = RobustStarletteIntegration
+
+
+_state_cache = InMemoryStateCache()
+oauth = OAuth(cache=_state_cache)
+
 client_kwargs: dict[str, Any] = {
     "code_challenge_method": "S256",
-    "token_endpoint_auth_method": settings.oauth_token_auth_method
+    "token_endpoint_auth_method": settings.oauth_token_auth_method,
 }
 if settings.oauth_scope:
     client_kwargs["scope"] = settings.oauth_scope
@@ -22,7 +85,7 @@ oauth.register(
     client_secret=settings.oauth_client_secret,
     authorize_url=settings.oauth_authorize_url,
     access_token_url=settings.oauth_token_url,
-    client_kwargs=client_kwargs
+    client_kwargs=client_kwargs,
 )
 
 
