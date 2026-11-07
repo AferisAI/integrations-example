@@ -67,7 +67,7 @@ Essa sessão administra a integração. Ela não substitui o consentimento do ti
 
 ## OAuth e escopos
 
-O fluxo usa Authorization Code + PKCE S256: registrar redirect, abrir `/oauth/authorize` com `state` e `code_challenge`, aprovar na tela AferisAI e trocar o código em `/oauth/token`. O valor `scopes=["all"]` é expandido pelo servidor para os escopos que a credencial já possui; não concede acesso novo.
+O fluxo usa Authorization Code + PKCE S256: registrar redirect, abrir `/oauth/authorize` com `state` e `code_challenge`, aprovar na tela AferisAI e trocar o código em `/oauth/token`. A resposta contém access token de 15 minutos e refresh token rotativo de 30 dias. O BFF deve renovar antes do vencimento usando `grant_type=refresh_token`, o refresh token atual e o mesmo `code_verifier`; nunca deve repetir um refresh token já usado. O valor `scopes=["all"]` é expandido pelo servidor para os escopos que a credencial já possui; não concede acesso novo.
 
 ## Fora do acesso delegado
 

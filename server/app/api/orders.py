@@ -12,7 +12,7 @@ router = APIRouter(prefix="/api/orders", tags=["orders"])
 @router.get("/legal-documents")
 async def list_legal_documents(request: Request) -> dict[str, object]:
     return await partner_order_service.legal_documents.catalog(
-        oauth_service.access_token(request)
+        await oauth_service.access_token(request)
     )
 
 
@@ -28,7 +28,7 @@ async def create_order(
             content={"detail": "Idempotency-Key deve ser UUIDv7."},
         )
     result = await partner_order_service.create(
-        oauth_service.access_token(request), idempotency_key, payload
+        await oauth_service.access_token(request), idempotency_key, payload
     )
     return JSONResponse(status_code=result.status_code, content=result.body, headers=result.headers)
 
@@ -36,7 +36,7 @@ async def create_order(
 @router.get("/{order_id}")
 async def get_order(order_id: str, request: Request) -> JSONResponse:
     result = await partner_order_service.get(
-        oauth_service.access_token(request), _validate_id(order_id)
+        await oauth_service.access_token(request), _validate_id(order_id)
     )
     return JSONResponse(status_code=result.status_code, content=result.body, headers=result.headers)
 
@@ -46,7 +46,7 @@ async def confirm_payment(
     order_id: str, payload: OrderPaymentInput, request: Request
 ) -> JSONResponse:
     result = await partner_order_service.pay(
-        oauth_service.access_token(request), _validate_id(order_id), payload
+        await oauth_service.access_token(request), _validate_id(order_id), payload
     )
     return JSONResponse(status_code=result.status_code, content=result.body, headers=result.headers)
 
