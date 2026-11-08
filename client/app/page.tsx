@@ -102,9 +102,129 @@ function formatAmount(cents: unknown) {
   }).format(cents / 100);
 }
 
+const partnerEndpointGroups = [
+  { title: "An\u00e1lises", endpoints: [
+    { method: "GET", path: "/v1/partner/analyses", summary: "Listar an\u00e1lises delegadas" },
+    { method: "GET", path: "/v1/partner/analyses/{analysis_id}", summary: "Consultar an\u00e1lise delegada" },
+    { method: "GET", path: "/v1/partner/analyses/{analysis_id}/certificate-options", summary: "Certid\u00f5es do arquivo delegado" },
+    { method: "GET", path: "/v1/partner/analyses/{analysis_id}/certificates", summary: "Listar certid\u00f5es delegadas" },
+    { method: "GET", path: "/v1/partner/analyses/{analysis_id}/certificates/{task_id}/document", summary: "Baixar certid\u00e3o delegada" },
+    { method: "GET", path: "/v1/partner/analyses/{analysis_id}/complete.pdf", summary: "Baixar dossi\u00ea delegado" },
+    { method: "GET", path: "/v1/partner/analyses/{analysis_id}/original", summary: "Baixar original delegado" },
+    { method: "GET", path: "/v1/partner/analyses/{analysis_id}/pix", summary: "Consultar PIX de an\u00e1lise" },
+    { method: "GET", path: "/v1/partner/analyses/{analysis_id}/quotes", summary: "Consultar cota\u00e7\u00e3o delegada" },
+    { method: "GET", path: "/v1/partner/analyses/{analysis_id}/report.pdf", summary: "Baixar relat\u00f3rio PDF delegado" },
+    { method: "GET", path: "/v1/partner/analyses/{analysis_id}/result", summary: "Ler resultado delegado" },
+    { method: "POST", path: "/v1/partner/analyses", summary: "Enviar matr\u00edcula via parceiro" },
+    { method: "POST", path: "/v1/partner/analyses/{analysis_id}/credits", summary: "Pagar an\u00e1lise com cr\u00e9ditos" },
+    { method: "POST", path: "/v1/partner/analyses/{analysis_id}/pix", summary: "Iniciar PIX de an\u00e1lise" },
+    { method: "POST", path: "/v1/partner/analyses/{analysis_id}/quotes", summary: "Cotar arquivo delegado" },
+  ], },
+  { title: "Aplica\u00e7\u00f5es e m\u00e9tricas", endpoints: [
+    { method: "DELETE", path: "/v1/partner/applications/{application_id}/credentials/{credential_id}", summary: "Revogar credencial" },
+    { method: "GET", path: "/v1/partner/applications", summary: "Minhas aplica\u00e7\u00f5es" },
+    { method: "GET", path: "/v1/partner/applications/{application_id}", summary: "Ver aplica\u00e7\u00e3o" },
+    { method: "GET", path: "/v1/partner/applications/{application_id}/credentials", summary: "Credenciais da aplica\u00e7\u00e3o" },
+    { method: "GET", path: "/v1/partner/applications/{application_id}/metrics", summary: "M\u00e9tricas da aplica\u00e7\u00e3o" },
+    { method: "GET", path: "/v1/partner/applications/{application_id}/permissions", summary: "Permiss\u00f5es da aplica\u00e7\u00e3o" },
+    { method: "GET", path: "/v1/partner/applications/{application_id}/redirect-uris", summary: "Consultar retornos OAuth" },
+    { method: "POST", path: "/v1/partner/applications/{application_id}/credentials", summary: "Emitir credencial" },
+  ], },
+  { title: "Autentica\u00e7\u00e3o OAuth", endpoints: [
+    { method: "GET", path: "/oauth/authorize", summary: "Abrir autoriza\u00e7\u00e3o" },
+    { method: "POST", path: "/oauth/token", summary: "Criar token" },
+  ], },
+  { title: "Diret\u00f3rio de cart\u00f3rios", endpoints: [
+    { method: "GET", path: "/v1/registry-offices", summary: "Buscar cart\u00f3rios" },
+  ], },
+  { title: "Jur\u00eddico", endpoints: [
+    { method: "GET", path: "/v1/legal/catalog", summary: "Consultar cat\u00e1logo jur\u00eddico" },
+  ], },
+  { title: "M\u00e9tricas e comiss\u00f5es", endpoints: [
+    { method: "GET", path: "/v1/partner/commissions", summary: "Consultar extrato de comiss\u00f5es" },
+    { method: "GET", path: "/v1/partner/metrics", summary: "Consultar m\u00e9tricas da parceria" },
+  ], },
+  { title: "Ordens unificadas", endpoints: [
+    { method: "GET", path: "/v1/partner/orders/{order_id}", summary: "Consultar ordem" },
+    { method: "POST", path: "/v1/partner/orders", summary: "Criar ordem" },
+    { method: "POST", path: "/v1/partner/orders/{order_id}/payment", summary: "Pagar ordem" },
+  ], },
+  { title: "Pagamentos", endpoints: [
+    { method: "GET", path: "/v1/partner/payment-options", summary: "Consultar op\u00e7\u00f5es de pagamento" },
+  ], },
+  { title: "Pedidos registrais", endpoints: [
+    { method: "GET", path: "/v1/partner/registry-requests", summary: "Listar pedidos registrais" },
+    { method: "GET", path: "/v1/partner/registry-requests/{operation_id}", summary: "Consultar pedido registral" },
+    { method: "GET", path: "/v1/partner/registry-requests/{operation_id}/certificate-options", summary: "Listar certid\u00f5es delegadas" },
+    { method: "GET", path: "/v1/partner/registry-requests/{operation_id}/pix", summary: "Consultar PIX registral" },
+    { method: "GET", path: "/v1/partner/registry-requests/{operation_id}/quote", summary: "Consultar cota\u00e7\u00e3o delegada" },
+    { method: "POST", path: "/v1/partner/registry-requests/address", summary: "Pedir registro por endere\u00e7o" },
+    { method: "POST", path: "/v1/partner/registry-requests/number", summary: "Pedir registro por n\u00famero" },
+    { method: "POST", path: "/v1/partner/registry-requests/{operation_id}/credits", summary: "Pagar registro com cr\u00e9ditos" },
+    { method: "POST", path: "/v1/partner/registry-requests/{operation_id}/pix", summary: "Iniciar PIX registral" },
+    { method: "POST", path: "/v1/partner/registry-requests/{operation_id}/preview", summary: "Consultar custo delegado" },
+    { method: "POST", path: "/v1/partner/registry-requests/{operation_id}/quote", summary: "Cotar pedido delegado" },
+  ], },
+  { title: "Pessoas e convites", endpoints: [
+    { method: "GET", path: "/v1/partner/people", summary: "Listar pessoas da parceria" },
+    { method: "GET", path: "/v1/partner/people/{member_id}/events", summary: "Consultar hist\u00f3rico da pessoa" },
+    { method: "POST", path: "/v1/partner/invitations", summary: "Convidar pessoa da parceria" },
+    { method: "POST", path: "/v1/partner/invitations/accept", summary: "Aceitar outra empresa" },
+    { method: "POST", path: "/v1/partner/invitations/confirm", summary: "Confirmar autenticador" },
+    { method: "POST", path: "/v1/partner/invitations/enroll", summary: "Preparar acesso" },
+    { method: "POST", path: "/v1/partner/invitations/{invitation_id}/resend", summary: "Reenviar convite da parceria" },
+    { method: "POST", path: "/v1/partner/invitations/{invitation_id}/revoke", summary: "Revogar convite da parceria" },
+    { method: "POST", path: "/v1/partner/people/{member_id}/reactivate", summary: "Reativar pessoa da parceria" },
+    { method: "POST", path: "/v1/partner/people/{member_id}/suspend", summary: "Suspender pessoa da parceria" },
+    { method: "PUT", path: "/v1/partner/people/{member_id}/role", summary: "Alterar papel da pessoa" },
+  ], },
+  { title: "Sess\u00e3o, organiza\u00e7\u00e3o e conta", endpoints: [
+    { method: "DELETE", path: "/v1/partner/passkeys/{passkey_id}", summary: "Revogar passkey" },
+    { method: "DELETE", path: "/v1/partner/sessions/current", summary: "Sair da parceria" },
+    { method: "GET", path: "/v1/partner/organizations", summary: "Minhas empresas" },
+    { method: "GET", path: "/v1/partner/organizations/{organization_id}/logo", summary: "Ver logo da parceria" },
+    { method: "GET", path: "/v1/partner/passkeys", summary: "Listar passkeys" },
+    { method: "GET", path: "/v1/partner/sessions/current", summary: "Minha sess\u00e3o" },
+    { method: "GET", path: "/v1/partner/webhook-events", summary: "Consultar eventos dispon\u00edveis" },
+    { method: "POST", path: "/v1/partner/mfa/recovery/complete", summary: "Confirmar novo autenticador" },
+    { method: "POST", path: "/v1/partner/mfa/recovery/request", summary: "Recuperar autenticador" },
+    { method: "POST", path: "/v1/partner/mfa/recovery/verify", summary: "Verificar recupera\u00e7\u00e3o" },
+    { method: "POST", path: "/v1/partner/passkeys/authentication/confirm", summary: "Criar sess\u00e3o com passkey" },
+    { method: "POST", path: "/v1/partner/passkeys/authentication/options", summary: "Iniciar entrada com passkey" },
+    { method: "POST", path: "/v1/partner/passkeys/registration/confirm", summary: "Confirmar cadastro de passkey" },
+    { method: "POST", path: "/v1/partner/passkeys/registration/options", summary: "Iniciar cadastro de passkey" },
+    { method: "POST", path: "/v1/partner/password/recovery/complete", summary: "Concluir recupera\u00e7\u00e3o de senha" },
+    { method: "POST", path: "/v1/partner/password/recovery/request", summary: "Solicitar recupera\u00e7\u00e3o de senha" },
+    { method: "POST", path: "/v1/partner/sessions", summary: "Entrar na parceria" },
+    { method: "POST", path: "/v1/partner/sessions/current/csrf", summary: "Renovar confirma\u00e7\u00e3o" },
+    { method: "POST", path: "/v1/partner/sessions/current/organization", summary: "Trocar empresa" },
+  ], },
+  { title: "Suporte administrativo", endpoints: [
+    { method: "DELETE", path: "/v1/team/partner-support-sessions/current", summary: "Encerrar suporte como parceiro" },
+    { method: "GET", path: "/v1/team/partner-support-sessions/current", summary: "Consultar suporte atual" },
+    { method: "POST", path: "/v1/team/partner-support-sessions", summary: "Iniciar suporte como parceiro" },
+  ], },
+  { title: "Webhooks e entregas", endpoints: [
+    { method: "DELETE", path: "/v1/partner/applications/{application_id}/webhook-endpoint", summary: "Remover destino de eventos" },
+    { method: "GET", path: "/v1/partner/applications/{application_id}/webhook-deliveries", summary: "Listar entregas da aplica\u00e7\u00e3o" },
+    { method: "GET", path: "/v1/partner/applications/{application_id}/webhook-deliveries/{delivery_id}", summary: "Consultar uma entrega" },
+    { method: "GET", path: "/v1/partner/applications/{application_id}/webhook-endpoint", summary: "Consultar destino de eventos" },
+    { method: "POST", path: "/v1/partner/applications/{application_id}/webhook-deliveries/{delivery_id}/resend", summary: "Reenviar evento da aplica\u00e7\u00e3o" },
+    { method: "POST", path: "/v1/partner/applications/{application_id}/webhook-endpoint", summary: "Cadastrar destino de eventos" },
+    { method: "POST", path: "/v1/partner/applications/{application_id}/webhook-endpoint/key-rotation", summary: "Preparar chave da aplica\u00e7\u00e3o" },
+    { method: "POST", path: "/v1/partner/applications/{application_id}/webhook-endpoint/key-rotation/activate", summary: "Ativar chave preparada" },
+    { method: "POST", path: "/v1/partner/applications/{application_id}/webhook-endpoint/key-rotation/test", summary: "Testar chave preparada" },
+    { method: "POST", path: "/v1/partner/applications/{application_id}/webhook-endpoint/test", summary: "Enviar evento de teste" },
+    { method: "PUT", path: "/v1/partner/applications/{application_id}/webhook-endpoint/events", summary: "Selecionar eventos do webhook" },
+    { method: "PUT", path: "/v1/partner/applications/{application_id}/webhook-endpoint/status", summary: "Ativar ou suspender destino" },
+  ], },
+];
+
 export default function Home() {
   const [authState, setAuthState] = useState<AuthState>("checking");
   const [showTracking, setShowTracking] = useState(false);
+  const [wizardStep, setWizardStep] = useState(1);
+  const connected = authState === "connected";
   const [product, setProduct] = useState<Product>("visualizacao");
   const [selectedOffice, setSelectedOffice] = useState<RegistryOffice | null>(null);
   const [registrationText, setRegistrationText] = useState("");
@@ -169,6 +289,7 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
+    if (authState !== "connected") return;
     fetch(`${apiUrl}/api/orders/legal-documents`, { credentials: "include" })
       .then(async (response) => {
         const body = await response.json().catch(() => null);
@@ -183,7 +304,7 @@ export default function Home() {
         setError("O catálogo legal da Aferis retornou uma versão inválida.");
       })
       .catch((reason) => setError(reason instanceof Error ? reason.message : "Não foi possível carregar o catálogo legal."));
-  }, []);
+  }, [authState]);
 
   useEffect(() => {
     if (!activeRequestId) return;
@@ -192,6 +313,10 @@ export default function Home() {
     setLegalConfirmed(false);
     setPixCopied(false);
   }, [activeRequestId]);
+
+  useEffect(() => {
+    setShowTracking(wizardStep === 4);
+  }, [wizardStep]);
 
   useEffect(() => {
     if (!directoryOpen) return;
@@ -391,6 +516,7 @@ export default function Home() {
       setRequest(body);
       setNotice(`Pedido criado. Consultando o registro ${id}…`);
       await loadRequest(id);
+      setWizardStep(4);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Falha ao criar o pedido.");
     } finally {
@@ -534,7 +660,116 @@ export default function Home() {
         {error && <div className="alert alert-error" role="alert"><span>!</span>{error}</div>}
         {notice && <div className="alert alert-success" role="status"><span>✓</span>{notice}</div>}
 
-        <div className="workspace-grid">
+        <nav className="wizard-stepper" aria-label="Jornada de integração">
+          {[
+            { number: 1, label: "Conectar", hint: "OAuth real" },
+            { number: 2, label: "Casos de uso", hint: "recursos" },
+            { number: 3, label: "Criar", hint: "pedido" },
+            { number: 4, label: "Acompanhar", hint: "pagamento" },
+            { number: 5, label: "Documentar", hint: "endpoints" },
+          ].map((item) => (
+            <button
+              key={item.number}
+              type="button"
+              className={`wizard-step${wizardStep === item.number ? " active" : ""}${wizardStep > item.number ? " done" : ""}`}
+              onClick={() => setWizardStep(item.number)}
+            >
+              <span className="wizard-step-icon" aria-hidden="true">
+                <svg viewBox="0 0 32 32" className="wizard-step-svg">
+                  <circle cx="16" cy="16" r="12" />
+                  {wizardStep > item.number ? (
+                    <path d="M10 16.5 14.2 20.7 22 12.5" />
+                  ) : (
+                    <text x="16" y="20.5">{item.number}</text>
+                  )}
+                </svg>
+              </span>
+              <span className="wizard-step-copy">
+                <strong>{item.label}</strong>
+                <small>{item.hint}</small>
+              </span>
+              {item.number < 5 && <span className="wizard-connector" aria-hidden="true" />}
+            </button>
+          ))}
+        </nav>
+
+        {wizardStep === 1 && (
+          <section className="wizard-panel fade-slide">
+            <div className="wizard-card">
+              <div className="wizard-card-header">
+                <span className="wizard-orb" aria-hidden="true">
+                  <svg viewBox="0 0 64 64">
+                    <circle cx="32" cy="32" r="24" className="orb-ring" />
+                    <circle cx="32" cy="32" r="10" className="orb-core" />
+                    <path d="M32 8 V56" className="orb-pulse" />
+                  </svg>
+                </span>
+                <div>
+                  <h2>Conexão real com a AferisAI</h2>
+                  <p>O segredo OAuth e o token ficam no servidor FastAPI. O navegador apenas inicia e consulta o status.</p>
+                </div>
+              </div>
+              <div className="wizard-status-row">
+                <span className={`connection-pill ${authState}`}>
+                  <span className="connection-dot" />
+                  {statusLabel}
+                </span>
+                {authState === "connected" ? (
+                  <button className="button button-small" type="button" onClick={() => setWizardStep(2)}>
+                    Avançar para casos de uso →
+                  </button>
+                ) : (
+                  <a className="button button-small" href={authState === "offline" ? undefined : `${apiUrl}/auth/login`}>
+                    Conectar Aferisai ↗
+                  </a>
+                )}
+              </div>
+              <ul className="wizard-list">
+                <li>Authorization Code + PKCE S256 no servidor.</li>
+                <li>Escopos delegados: <code>registry:submit</code>, <code>registry:read</code>, <code>registry:pay</code>.</li>
+                <li>Recuperação após refresh e tentativas pendentes.</li>
+              </ul>
+            </div>
+          </section>
+        )}
+
+        {wizardStep === 2 && (
+          <section className="wizard-panel fade-slide">
+            <div className="wizard-card">
+              <h2>Casos de uso cobertos pela demonstração</h2>
+              <p>Selecione um fluxo. Todos usam a mesma conexão delegada e as mesmas chaves de idempotência.</p>
+              <div className="use-case-grid">
+                <button type="button" className="use-case-card" onClick={() => setWizardStep(3)}>
+                  <span className="use-case-icon">📂</span>
+                  <strong>Registro por número/CNM</strong>
+                  <small>Busca o cartório no diretório, cria a ordem e cota sem chamadas duplicadas.</small>
+                </button>
+                <button type="button" className="use-case-card" onClick={() => setWizardStep(3)}>
+                  <span className="use-case-icon">📍</span>
+                  <strong>Registro por endereço</strong>
+                  <small>Disponível na API; adapte o mesmo fluxo quando aplicável.</small>
+                </button>
+                <button type="button" className="use-case-card" onClick={() => setWizardStep(4)}>
+                  <span className="use-case-icon">💳</span>
+                  <strong>Pagamento PIX ou créditos</strong>
+                  <small>Gera QR ou debita saldo com aceite legal vindo do catálogo oficial.</small>
+                </button>
+                <button type="button" className="use-case-card" onClick={() => setWizardStep(5)}>
+                  <span className="use-case-icon">📚</span>
+                  <strong>Documentação e paridade</strong>
+                  <small>Tabela de endpoints, escopos e limites publicados pela API.</small>
+                </button>
+              </div>
+              <div className="wizard-actions">
+                <button type="button" className="button button-secondary" onClick={() => setWizardStep(1)}>Voltar</button>
+                <button type="button" className="button" onClick={() => setWizardStep(3)}>Iniciar pedido</button>
+              </div>
+            </div>
+          </section>
+        )}
+
+        {wizardStep >= 3 && wizardStep <= 4 && (
+          <div className="workspace-grid">
           <section className="panel create-panel">
             <div className="panel-heading">
               <div className="panel-icon icon-blue">＋</div>
@@ -757,7 +992,7 @@ export default function Home() {
                   <button type="button" className={`payment-method-row${paymentMethod === "credits" ? " selected" : ""}`} onClick={() => setPaymentMethod("credits")}>
                     <span className="method-icon credits-icon">C</span>
                     <div><strong>Créditos</strong><small>Debita o saldo confirmado da conta</small></div>
-                    <span className="method-availability">Disponível</span>
+                    <span className="method-availability">Variável</span>
                   </button>
                   <label className="legal-confirmation">
                     <input type="checkbox" checked={legalConfirmed} onChange={(event) => setLegalConfirmed(event.target.checked)} />
@@ -850,6 +1085,57 @@ export default function Home() {
           </div>
 
         </div>
+        )}
+
+        {wizardStep === 5 && (
+          <section className="wizard-panel fade-slide">
+            <div className="wizard-card">
+              <h2>Documentação e paridade da integração</h2>
+              <p>O demo cobre os recursos públicos usados no fluxo recomendado. Consulte a referência completa em <code>docs/partner-api-reference.md</code>.</p>
+              <table className="docs-table">
+                <thead>
+                  <tr><th>Recurso</th><th>Endpoint</th><th>Escopo</th><th>Status na demo</th></tr>
+                </thead>
+                <tbody>
+                  <tr><td>Conexão OAuth</td><td>/auth/login, /auth/status</td><td>PKCE</td><td>Implementado</td></tr>
+                  <tr><td>Busca de cartórios</td><td>GET /v1/registry-offices</td><td>público</td><td>Implementado</td></tr>
+                  <tr><td>Criar ordem</td><td>POST /api/orders</td><td>registry:submit</td><td>Implementado</td></tr>
+                  <tr><td>Consultar ordem</td><td>GET /api/orders/{"{id}"}</td><td>registry:read</td><td>Implementado</td></tr>
+                  <tr><td>Pagar PIX/créditos</td><td>POST /api/orders/{"{id}"}/payment</td><td>registry:pay, payment:credits</td><td>Implementado</td></tr>
+                  <tr><td>Catálogo legal</td><td>GET /api/orders/legal-documents</td><td>delegado</td><td>Implementado</td></tr>
+                  <tr><td>Webhooks</td><td>/v1/partner/applications/{"{id}"}/webhook-endpoint</td><td>sessão do parceiro</td><td>Documentado</td></tr>
+                  <tr><td>Créditos</td><td>GET /v1/partner/payment-options</td><td>payment:read</td><td>Planejado</td></tr>
+                </tbody>
+              </table>
+
+              <h3 className="wizard-subtitle">Catálogo completo dos endpoints Partner</h3>
+              <p className="wizard-muted">Endpoints publicados pela API parceira. A demonstração implementa diretamente o fluxo de ordens e documenta os demais recursos.</p>
+
+              <div className="endpoint-catalog">
+                {partnerEndpointGroups.map((group) => (
+                  <section key={group.title} className="endpoint-group">
+                    <h4>{group.title}</h4>
+                    <table className="docs-table">
+                      <tbody>
+                        {group.endpoints.map((endpoint) => (
+                          <tr key={group.title + endpoint.method + endpoint.path}>
+                            <td>{endpoint.method}</td>
+                            <td>{endpoint.path}</td>
+                            <td>{endpoint.summary}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </section>
+                ))}
+              </div>
+
+              <div className="wizard-actions">
+                <button type="button" className="button button-secondary" onClick={() => setWizardStep(4)}>Voltar ao acompanhamento</button>
+              </div>
+            </div>
+          </section>
+        )}
 
         {directoryOpen && (
           <div

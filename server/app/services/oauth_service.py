@@ -1,4 +1,7 @@
-import asyncio
+import base64
+import hashlib
+import httpx
+import json
 import secrets
 import time
 from typing import Any
@@ -6,7 +9,6 @@ from typing import Any
 from authlib.integrations.starlette_client import OAuth as StarletteOAuth
 from authlib.integrations.starlette_client.integration import StarletteIntegration
 from fastapi import HTTPException
-import httpx
 from starlette.requests import Request
 
 from app.core.settings import settings
@@ -92,80 +94,131 @@ oauth.register(
 
 
 class OAuthService:
-    def __init__(self) -> None:
-        self._refresh_lock = asyncio.Lock()
-
     async def start_login(self, request: Request):
         self._ensure_configured()
-        code_verifier = secrets.token_urlsafe(64)
-        request.session["oauth_code_verifier"] = code_verifier
+        verifier = secrets.token_urlsafe(32)
+        challenge = base64.urlsafe_b64encode(
+            hashlib.sha256(verifier.encode("utf-8")).digest()
+        ).rstrip(b"=").decode("utf-8")
+        request.session["aferisai_code_verifier"] = verifier
         return await oauth.aferisai.authorize_redirect(
-            request, settings.oauth_redirect_uri, code_verifier=code_verifier
+            request,
+            settings.oauth_redirect_uri,
+            code_verifier=verifier,
+            code_challenge=challenge,
+            code_challenge_method="S256",
         )
 
     async def finish_login(self, request: Request):
         self._ensure_configured()
         token = await oauth.aferisai.authorize_access_token(request)
-        token["_code_verifier"] = request.session.pop("oauth_code_verifier", "")
+        if not isinstance(token, dict):
+            token = dict(token or {})
+        if "expires_in" in token and "expires_at" not in token:
+            token["expires_at"] = time.time() + int(token["expires_in"])
+        token["code_verifier"] = request.session.get("aferisai_code_verifier")
         session_id = request.session.get("auth_session_id") or secrets.token_urlsafe(32)
         token_store.save(session_id, token)
         request.session["auth_session_id"] = session_id
+        request.session.pop("aferisai_code_verifier", None)
 
-    def status(self, request: Request) -> dict[str, Any]:
-        token = token_store.get(request.session.get("auth_session_id"))
+    async def status(self, request: Request) -> dict[str, Any]:
+        session_id = request.session.get("auth_session_id")
+        token = token_store.get(session_id)
         if not token or not token.get("access_token"):
             return {"authenticated": False}
-        expires_at = _expires_at(token)
-        return {
-            "authenticated": True,
-            "token_type": token.get("token_type", "Bearer"),
-            "expires_at": expires_at,
-            "expires_in": max(0, int(expires_at - time.time())) if expires_at else None,
-            "refresh_available": bool(token.get("refresh_token")),
-        }
+        # A AferisAI não emite refresh token: o token delegado vale 15 minutos.
+        # Quando ele expira, o estado local também expira e o titular precisa
+        # autorizar novamente, sem fingir renovação silenciosa.
+        if self._token_expired(token):
+            refreshed = None
+            try:
+                refreshed = await self._refresh_token(token)
+            except Exception:
+                refreshed = None
+            if refreshed and refreshed.get("access_token"):
+                token_store.save(session_id, refreshed)
+                return {"authenticated": True}
+            token_store.delete(session_id)
+            try:
+                request.session.clear()
+            except Exception:
+                pass
+            return {"authenticated": False}
+        return {"authenticated": True}
 
     async def access_token(self, request: Request) -> str:
-        token = token_store.get(request.session.get("auth_session_id"))
+        session_id = request.session.get("auth_session_id")
+        token = token_store.get(session_id)
         if not token or not token.get("access_token"):
             raise HTTPException(status_code=401, detail="Autentique-se para continuar.")
-        if _expires_at(token) and _expires_at(token) - time.time() <= 60:
-            token = await self._refresh(request, token)
+
+        if self._token_expired(token):
+            refreshed = await self._refresh_token(token)
+            if refreshed and refreshed.get("access_token"):
+                if "expires_at" not in refreshed and "expires_in" in refreshed:
+                    refreshed["expires_at"] = time.time() + int(refreshed["expires_in"])
+                if "code_verifier" not in refreshed:
+                    refreshed["code_verifier"] = token.get("code_verifier")
+                if "refresh_token" not in refreshed:
+                    refreshed["refresh_token"] = token.get("refresh_token")
+                token_store.save(session_id, refreshed)
+                token = refreshed
+            else:
+                token_store.delete(session_id)
+                try:
+                    request.session.clear()
+                except Exception:
+                    pass
+                raise HTTPException(
+                    status_code=401,
+                    detail="A sessão AferisAI expirou. Conecte novamente.",
+                )
+
         return str(token["access_token"])
 
-    async def _refresh(self, request: Request, token: dict[str, Any]) -> dict[str, Any]:
-        async with self._refresh_lock:
-            current = token_store.get(request.session.get("auth_session_id")) or token
-            if _expires_at(current) and _expires_at(current) - time.time() > 60:
-                return current
-            refresh_token = str(current.get("refresh_token") or "")
-            code_verifier = str(current.get("_code_verifier") or "")
-            if not refresh_token or not code_verifier:
-                raise HTTPException(status_code=401, detail="A autorização expirou. Conecte-se novamente.")
-            try:
-                async with httpx.AsyncClient(timeout=15) as client:
-                    response = await client.post(
-                        settings.oauth_token_url,
-                        data={
-                            "grant_type": "refresh_token",
-                            "refresh_token": refresh_token,
-                            "code_verifier": code_verifier,
-                        },
-                        auth=(settings.oauth_client_id, settings.oauth_client_secret),
-                    )
-            except httpx.RequestError as error:
-                raise HTTPException(status_code=503, detail="Não foi possível renovar a autorização AferisAI.") from error
+    @staticmethod
+    def _token_expired(token: dict[str, Any]) -> bool:
+        expires_at = token.get("expires_at")
+        if expires_at is None:
+            return False
+        try:
+            return time.time() >= (float(expires_at) - 60)
+        except (TypeError, ValueError):
+            return False
+
+    async def _refresh_token(self, token: dict[str, Any]) -> dict[str, Any] | None:
+        refresh_token = token.get("refresh_token")
+        code_verifier = token.get("code_verifier")
+        if not refresh_token or not code_verifier:
+            return None
+        self._ensure_configured()
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                response = await client.post(
+                    settings.oauth_token_url,
+                    data={
+                        "grant_type": "refresh_token",
+                        "refresh_token": refresh_token,
+                        "code_verifier": code_verifier,
+                    },
+                    auth=(settings.oauth_client_id, settings.oauth_client_secret),
+                    headers={"Content-Type": "application/x-www-form-urlencoded"},
+                )
             if response.status_code != 200:
-                token_store.delete(request.session.get("auth_session_id"))
-                raise HTTPException(status_code=401, detail="A autorização expirou. Conecte-se novamente.")
-            try:
-                renewed = response.json()
-            except ValueError as error:
-                raise HTTPException(status_code=502, detail="A renovação retornou uma resposta inválida.") from error
-            if not isinstance(renewed, dict) or not renewed.get("access_token"):
-                raise HTTPException(status_code=502, detail="A renovação não retornou um token válido.")
-            renewed["_code_verifier"] = code_verifier
-            token_store.save(request.session.get("auth_session_id"), renewed)
-            return renewed
+                return None
+            refreshed = response.json()
+            if not isinstance(refreshed, dict) or not refreshed.get("access_token"):
+                return None
+            if "expires_at" not in refreshed and "expires_in" in refreshed:
+                refreshed["expires_at"] = time.time() + int(refreshed["expires_in"])
+            if "refresh_token" not in refreshed:
+                refreshed["refresh_token"] = refresh_token
+            if "code_verifier" not in refreshed:
+                refreshed["code_verifier"] = code_verifier
+            return refreshed
+        except Exception:
+            return None
 
     def logout(self, request: Request) -> None:
         token_store.delete(request.session.get("auth_session_id"))
@@ -188,17 +241,3 @@ class OAuthService:
 
 
 oauth_service = OAuthService()
-
-
-def _expires_at(token: dict[str, Any]) -> float | None:
-    value = token.get("expires_at")
-    if isinstance(value, (int, float)):
-        return float(value)
-    if isinstance(value, str):
-        try:
-            from datetime import datetime
-            return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
-        except ValueError:
-            return None
-    expires_in = token.get("expires_in")
-    return time.time() + float(expires_in) if isinstance(expires_in, (int, float)) else None

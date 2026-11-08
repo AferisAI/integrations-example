@@ -19,8 +19,8 @@ async def callback(request: Request):
 
 
 @router.get("/status")
-def status(request: Request):
-    return oauth_service.status(request)
+async def status(request: Request):
+    return await oauth_service.status(request)
 
 
 @router.post("/logout")
