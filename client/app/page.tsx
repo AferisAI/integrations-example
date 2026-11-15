@@ -1,230 +1,50 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import type { FormEvent } from "react";
+import { ArchitectureFlow } from "./_components/architecture-flow";
+import { CapabilityMap } from "./_components/capability-map";
+import { DirectoryDialog } from "./_components/directory-dialog";
+import type { DirectoryState } from "./_components/directory-dialog";
+import { Icon } from "./_components/icons";
+import { Onboarding } from "./_components/onboarding";
+import type { OnboardingStep } from "./_components/onboarding";
+import { OrderForm } from "./_components/order-form";
+import { OrderTracking } from "./_components/order-tracking";
+import {
+  apiUrl,
+  createUuid7,
+  lastRequestStorageKey,
+  operationIdFrom,
+  pendingStorageKey,
+  readError,
+  selectedOfficeStorageKey,
+} from "./_lib/partner-demo";
+import type {
+  ApiObject,
+  AuthState,
+  PaymentMethod,
+  PendingRequest,
+  Product,
+  RegistryOffice,
+  RequestPayload,
+} from "./_lib/partner-demo";
 
-type Product = "visualizacao" | "inteiro_teor_simples" | "inteiro_teor";
-type AuthState = "checking" | "connected" | "disconnected" | "offline";
-type RequestPayload = {
-  product: Product;
-  office_id: string;
-  registration_numbers: string[];
-  address_context?: string;
+const statusLabels: Record<AuthState, string> = {
+  checking: "Verificando conexão",
+  connected: "Conta conectada",
+  disconnected: "Conta desconectada",
+  offline: "Servidor indisponível",
 };
-type PendingRequest = {
-  idempotencyKey: string;
-  payload: RequestPayload;
-};
-type PaymentAction = "payment";
-type PaymentMethod = "pix" | "credits";
-type RegistryOffice = {
-  id: string;
-  name: string;
-  city: string;
-  state: string;
-  cns: string;
-  cns_ambiguous: boolean;
-  number?: number | null;
-  product_history?: { product: string; availability: string; seen_count: number }[];
-};
-type ApiObject = Record<string, unknown>;
 
-const apiUrl = (process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000").replace(
-  /\/$/,
-  "",
-);
-const pendingStorageKey = "aferisai.pendingRegistryRequest";
-const lastRequestStorageKey = "aferisai.lastRegistryRequestId";
-const selectedOfficeStorageKey = "aferisai.selectedRegistryOffice";
-const brazilianStates = [
-  "AC", "AL", "AP", "AM", "BA", "CE", "DF", "ES", "GO", "MA", "MT", "MS",
-  "MG", "PA", "PB", "PR", "PE", "PI", "RJ", "RN", "RS", "RO", "RR", "SC",
-  "SP", "SE", "TO",
-];
-
-function createUuid7() {
-  const bytes = crypto.getRandomValues(new Uint8Array(16));
-  let timestamp = Date.now();
-  for (let index = 5; index >= 0; index -= 1) {
-    bytes[index] = timestamp & 0xff;
-    timestamp = Math.floor(timestamp / 256);
-  }
-  bytes[6] = (bytes[6] & 0x0f) | 0x70;
-  bytes[8] = (bytes[8] & 0x3f) | 0x80;
-  const hex = Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
-  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+function prefersReducedMotion() {
+  return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 }
-
-function readError(body: unknown, fallback: string) {
-  if (body && typeof body === "object") {
-    const data = body as ApiObject;
-    if (typeof data.detail === "string") return data.detail;
-    if (typeof data.title === "string") return data.title;
-    if (Array.isArray(data.detail)) return "Confira os campos informados e tente novamente.";
-  }
-  return fallback;
-}
-
-function operationIdFrom(body: unknown, location: string | null) {
-  if (body && typeof body === "object") {
-    const data = body as ApiObject;
-    const nested = data.pedido && typeof data.pedido === "object"
-      ? (data.pedido as ApiObject)
-      : undefined;
-    const id = data.id ?? data.operation_id ?? data.request_id ?? nested?.id;
-    if (typeof id === "string" && id) return id;
-  }
-  if (location) {
-    try {
-      const path = new URL(location, apiUrl).pathname;
-      const segments = path.split("/").filter(Boolean);
-      return decodeURIComponent(segments[segments.length - 1] ?? "");
-    } catch {
-      return null;
-    }
-  }
-  return null;
-}
-
-function responseStatus(body: unknown) {
-  if (body && typeof body === "object") {
-    const status = (body as ApiObject).status;
-    if (typeof status === "string" || typeof status === "number") return String(status);
-  }
-  return "Aguardando atualização";
-}
-
-function formatAmount(cents: unknown) {
-  if (typeof cents !== "number") return "Valor indisponível";
-  return new Intl.NumberFormat("pt-BR", {
-    style: "currency",
-    currency: "BRL",
-  }).format(cents / 100);
-}
-
-const partnerEndpointGroups = [
-  { title: "An\u00e1lises", endpoints: [
-    { method: "GET", path: "/v1/partner/analyses", summary: "Listar an\u00e1lises delegadas" },
-    { method: "GET", path: "/v1/partner/analyses/{analysis_id}", summary: "Consultar an\u00e1lise delegada" },
-    { method: "GET", path: "/v1/partner/analyses/{analysis_id}/certificate-options", summary: "Certid\u00f5es do arquivo delegado" },
-    { method: "GET", path: "/v1/partner/analyses/{analysis_id}/certificates", summary: "Listar certid\u00f5es delegadas" },
-    { method: "GET", path: "/v1/partner/analyses/{analysis_id}/certificates/{task_id}/document", summary: "Baixar certid\u00e3o delegada" },
-    { method: "GET", path: "/v1/partner/analyses/{analysis_id}/complete.pdf", summary: "Baixar dossi\u00ea delegado" },
-    { method: "GET", path: "/v1/partner/analyses/{analysis_id}/original", summary: "Baixar original delegado" },
-    { method: "GET", path: "/v1/partner/analyses/{analysis_id}/pix", summary: "Consultar PIX de an\u00e1lise" },
-    { method: "GET", path: "/v1/partner/analyses/{analysis_id}/quotes", summary: "Consultar cota\u00e7\u00e3o delegada" },
-    { method: "GET", path: "/v1/partner/analyses/{analysis_id}/report.pdf", summary: "Baixar relat\u00f3rio PDF delegado" },
-    { method: "GET", path: "/v1/partner/analyses/{analysis_id}/result", summary: "Ler resultado delegado" },
-    { method: "POST", path: "/v1/partner/analyses", summary: "Enviar matr\u00edcula via parceiro" },
-    { method: "POST", path: "/v1/partner/analyses/{analysis_id}/credits", summary: "Pagar an\u00e1lise com cr\u00e9ditos" },
-    { method: "POST", path: "/v1/partner/analyses/{analysis_id}/pix", summary: "Iniciar PIX de an\u00e1lise" },
-    { method: "POST", path: "/v1/partner/analyses/{analysis_id}/quotes", summary: "Cotar arquivo delegado" },
-  ], },
-  { title: "Aplica\u00e7\u00f5es e m\u00e9tricas", endpoints: [
-    { method: "DELETE", path: "/v1/partner/applications/{application_id}/credentials/{credential_id}", summary: "Revogar credencial" },
-    { method: "GET", path: "/v1/partner/applications", summary: "Minhas aplica\u00e7\u00f5es" },
-    { method: "GET", path: "/v1/partner/applications/{application_id}", summary: "Ver aplica\u00e7\u00e3o" },
-    { method: "GET", path: "/v1/partner/applications/{application_id}/credentials", summary: "Credenciais da aplica\u00e7\u00e3o" },
-    { method: "GET", path: "/v1/partner/applications/{application_id}/metrics", summary: "M\u00e9tricas da aplica\u00e7\u00e3o" },
-    { method: "GET", path: "/v1/partner/applications/{application_id}/permissions", summary: "Permiss\u00f5es da aplica\u00e7\u00e3o" },
-    { method: "GET", path: "/v1/partner/applications/{application_id}/redirect-uris", summary: "Consultar retornos OAuth" },
-    { method: "POST", path: "/v1/partner/applications/{application_id}/credentials", summary: "Emitir credencial" },
-  ], },
-  { title: "Autentica\u00e7\u00e3o OAuth", endpoints: [
-    { method: "GET", path: "/oauth/authorize", summary: "Abrir autoriza\u00e7\u00e3o" },
-    { method: "POST", path: "/oauth/token", summary: "Criar token" },
-  ], },
-  { title: "Diret\u00f3rio de cart\u00f3rios", endpoints: [
-    { method: "GET", path: "/v1/registry-offices", summary: "Buscar cart\u00f3rios" },
-  ], },
-  { title: "Jur\u00eddico", endpoints: [
-    { method: "GET", path: "/v1/legal/catalog", summary: "Consultar cat\u00e1logo jur\u00eddico" },
-  ], },
-  { title: "M\u00e9tricas e comiss\u00f5es", endpoints: [
-    { method: "GET", path: "/v1/partner/commissions", summary: "Consultar extrato de comiss\u00f5es" },
-    { method: "GET", path: "/v1/partner/metrics", summary: "Consultar m\u00e9tricas da parceria" },
-  ], },
-  { title: "Ordens unificadas", endpoints: [
-    { method: "GET", path: "/v1/partner/orders/{order_id}", summary: "Consultar ordem" },
-    { method: "POST", path: "/v1/partner/orders", summary: "Criar ordem" },
-    { method: "POST", path: "/v1/partner/orders/{order_id}/payment", summary: "Pagar ordem" },
-  ], },
-  { title: "Pagamentos", endpoints: [
-    { method: "GET", path: "/v1/partner/payment-options", summary: "Consultar op\u00e7\u00f5es de pagamento" },
-  ], },
-  { title: "Pedidos registrais", endpoints: [
-    { method: "GET", path: "/v1/partner/registry-requests", summary: "Listar pedidos registrais" },
-    { method: "GET", path: "/v1/partner/registry-requests/{operation_id}", summary: "Consultar pedido registral" },
-    { method: "GET", path: "/v1/partner/registry-requests/{operation_id}/certificate-options", summary: "Listar certid\u00f5es delegadas" },
-    { method: "GET", path: "/v1/partner/registry-requests/{operation_id}/pix", summary: "Consultar PIX registral" },
-    { method: "GET", path: "/v1/partner/registry-requests/{operation_id}/quote", summary: "Consultar cota\u00e7\u00e3o delegada" },
-    { method: "POST", path: "/v1/partner/registry-requests/address", summary: "Pedir registro por endere\u00e7o" },
-    { method: "POST", path: "/v1/partner/registry-requests/number", summary: "Pedir registro por n\u00famero" },
-    { method: "POST", path: "/v1/partner/registry-requests/{operation_id}/credits", summary: "Pagar registro com cr\u00e9ditos" },
-    { method: "POST", path: "/v1/partner/registry-requests/{operation_id}/pix", summary: "Iniciar PIX registral" },
-    { method: "POST", path: "/v1/partner/registry-requests/{operation_id}/preview", summary: "Consultar custo delegado" },
-    { method: "POST", path: "/v1/partner/registry-requests/{operation_id}/quote", summary: "Cotar pedido delegado" },
-  ], },
-  { title: "Pessoas e convites", endpoints: [
-    { method: "GET", path: "/v1/partner/people", summary: "Listar pessoas da parceria" },
-    { method: "GET", path: "/v1/partner/people/{member_id}/events", summary: "Consultar hist\u00f3rico da pessoa" },
-    { method: "POST", path: "/v1/partner/invitations", summary: "Convidar pessoa da parceria" },
-    { method: "POST", path: "/v1/partner/invitations/accept", summary: "Aceitar outra empresa" },
-    { method: "POST", path: "/v1/partner/invitations/confirm", summary: "Confirmar autenticador" },
-    { method: "POST", path: "/v1/partner/invitations/enroll", summary: "Preparar acesso" },
-    { method: "POST", path: "/v1/partner/invitations/{invitation_id}/resend", summary: "Reenviar convite da parceria" },
-    { method: "POST", path: "/v1/partner/invitations/{invitation_id}/revoke", summary: "Revogar convite da parceria" },
-    { method: "POST", path: "/v1/partner/people/{member_id}/reactivate", summary: "Reativar pessoa da parceria" },
-    { method: "POST", path: "/v1/partner/people/{member_id}/suspend", summary: "Suspender pessoa da parceria" },
-    { method: "PUT", path: "/v1/partner/people/{member_id}/role", summary: "Alterar papel da pessoa" },
-  ], },
-  { title: "Sess\u00e3o, organiza\u00e7\u00e3o e conta", endpoints: [
-    { method: "DELETE", path: "/v1/partner/passkeys/{passkey_id}", summary: "Revogar passkey" },
-    { method: "DELETE", path: "/v1/partner/sessions/current", summary: "Sair da parceria" },
-    { method: "GET", path: "/v1/partner/organizations", summary: "Minhas empresas" },
-    { method: "GET", path: "/v1/partner/organizations/{organization_id}/logo", summary: "Ver logo da parceria" },
-    { method: "GET", path: "/v1/partner/passkeys", summary: "Listar passkeys" },
-    { method: "GET", path: "/v1/partner/sessions/current", summary: "Minha sess\u00e3o" },
-    { method: "GET", path: "/v1/partner/webhook-events", summary: "Consultar eventos dispon\u00edveis" },
-    { method: "POST", path: "/v1/partner/mfa/recovery/complete", summary: "Confirmar novo autenticador" },
-    { method: "POST", path: "/v1/partner/mfa/recovery/request", summary: "Recuperar autenticador" },
-    { method: "POST", path: "/v1/partner/mfa/recovery/verify", summary: "Verificar recupera\u00e7\u00e3o" },
-    { method: "POST", path: "/v1/partner/passkeys/authentication/confirm", summary: "Criar sess\u00e3o com passkey" },
-    { method: "POST", path: "/v1/partner/passkeys/authentication/options", summary: "Iniciar entrada com passkey" },
-    { method: "POST", path: "/v1/partner/passkeys/registration/confirm", summary: "Confirmar cadastro de passkey" },
-    { method: "POST", path: "/v1/partner/passkeys/registration/options", summary: "Iniciar cadastro de passkey" },
-    { method: "POST", path: "/v1/partner/password/recovery/complete", summary: "Concluir recupera\u00e7\u00e3o de senha" },
-    { method: "POST", path: "/v1/partner/password/recovery/request", summary: "Solicitar recupera\u00e7\u00e3o de senha" },
-    { method: "POST", path: "/v1/partner/sessions", summary: "Entrar na parceria" },
-    { method: "POST", path: "/v1/partner/sessions/current/csrf", summary: "Renovar confirma\u00e7\u00e3o" },
-    { method: "POST", path: "/v1/partner/sessions/current/organization", summary: "Trocar empresa" },
-  ], },
-  { title: "Suporte administrativo", endpoints: [
-    { method: "DELETE", path: "/v1/team/partner-support-sessions/current", summary: "Encerrar suporte como parceiro" },
-    { method: "GET", path: "/v1/team/partner-support-sessions/current", summary: "Consultar suporte atual" },
-    { method: "POST", path: "/v1/team/partner-support-sessions", summary: "Iniciar suporte como parceiro" },
-  ], },
-  { title: "Webhooks e entregas", endpoints: [
-    { method: "DELETE", path: "/v1/partner/applications/{application_id}/webhook-endpoint", summary: "Remover destino de eventos" },
-    { method: "GET", path: "/v1/partner/applications/{application_id}/webhook-deliveries", summary: "Listar entregas da aplica\u00e7\u00e3o" },
-    { method: "GET", path: "/v1/partner/applications/{application_id}/webhook-deliveries/{delivery_id}", summary: "Consultar uma entrega" },
-    { method: "GET", path: "/v1/partner/applications/{application_id}/webhook-endpoint", summary: "Consultar destino de eventos" },
-    { method: "POST", path: "/v1/partner/applications/{application_id}/webhook-deliveries/{delivery_id}/resend", summary: "Reenviar evento da aplica\u00e7\u00e3o" },
-    { method: "POST", path: "/v1/partner/applications/{application_id}/webhook-endpoint", summary: "Cadastrar destino de eventos" },
-    { method: "POST", path: "/v1/partner/applications/{application_id}/webhook-endpoint/key-rotation", summary: "Preparar chave da aplica\u00e7\u00e3o" },
-    { method: "POST", path: "/v1/partner/applications/{application_id}/webhook-endpoint/key-rotation/activate", summary: "Ativar chave preparada" },
-    { method: "POST", path: "/v1/partner/applications/{application_id}/webhook-endpoint/key-rotation/test", summary: "Testar chave preparada" },
-    { method: "POST", path: "/v1/partner/applications/{application_id}/webhook-endpoint/test", summary: "Enviar evento de teste" },
-    { method: "PUT", path: "/v1/partner/applications/{application_id}/webhook-endpoint/events", summary: "Selecionar eventos do webhook" },
-    { method: "PUT", path: "/v1/partner/applications/{application_id}/webhook-endpoint/status", summary: "Ativar ou suspender destino" },
-  ], },
-];
 
 export default function Home() {
   const [authState, setAuthState] = useState<AuthState>("checking");
-  const [showTracking, setShowTracking] = useState(false);
-  const [wizardStep, setWizardStep] = useState(1);
   const connected = authState === "connected";
+
   const [product, setProduct] = useState<Product>("visualizacao");
   const [selectedOffice, setSelectedOffice] = useState<RegistryOffice | null>(null);
   const [registrationText, setRegistrationText] = useState("");
@@ -235,7 +55,7 @@ export default function Home() {
   const [request, setRequest] = useState<unknown>(null);
   const [submitting, setSubmitting] = useState(false);
   const [loadingRequest, setLoadingRequest] = useState(false);
-  const [paymentBusy, setPaymentBusy] = useState<PaymentAction | "">("");
+  const [paymentBusy, setPaymentBusy] = useState(false);
   const [quoteData, setQuoteData] = useState<ApiObject | null>(null);
   const [pixData, setPixData] = useState<ApiObject | null>(null);
   const [legalConfirmed, setLegalConfirmed] = useState(false);
@@ -247,6 +67,7 @@ export default function Home() {
   const [loggingOut, setLoggingOut] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+
   const [directoryOpen, setDirectoryOpen] = useState(false);
   const [directoryState, setDirectoryState] = useState("");
   const [directoryCity, setDirectoryCity] = useState("");
@@ -314,18 +135,13 @@ export default function Home() {
     setPixCopied(false);
   }, [activeRequestId]);
 
-  useEffect(() => {
-    setShowTracking(wizardStep === 4);
-  }, [wizardStep]);
-
-  useEffect(() => {
-    if (!directoryOpen) return;
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setDirectoryOpen(false);
-    };
-    window.addEventListener("keydown", closeOnEscape);
-    return () => window.removeEventListener("keydown", closeOnEscape);
-  }, [directoryOpen]);
+  const closeDirectory = useCallback(() => {
+    setDirectoryOpen(false);
+    // Devolve o foco ao gatilho que abriu o diálogo.
+    requestAnimationFrame(() => {
+      document.querySelector<HTMLElement>(".office-trigger, .selected-office button")?.focus();
+    });
+  }, []);
 
   async function searchOffices(cursor?: string, append = false) {
     setOfficeError("");
@@ -369,7 +185,7 @@ export default function Home() {
         ? body as { items?: RegistryOffice[]; next_cursor?: string | null }
         : {};
       const items = Array.isArray(page.items) ? page.items : [];
-      setOfficeResults((current) => append ? [...current, ...items] : items);
+      setOfficeResults((current) => (append ? [...current, ...items] : items));
       setNextOfficeCursor(page.next_cursor ?? null);
       setOfficesSearched(true);
     } catch (reason) {
@@ -386,7 +202,7 @@ export default function Home() {
     } catch {
       // A escolha continua válida durante esta sessão mesmo sem armazenamento local.
     }
-    setDirectoryOpen(false);
+    closeDirectory();
     setOfficeError("");
   }
 
@@ -441,7 +257,7 @@ export default function Home() {
       setError("Confirme o aceite legal para a versão oficial disponível.");
       return;
     }
-    setPaymentBusy("payment");
+    setPaymentBusy(true);
     setError("");
     setNotice("");
     try {
@@ -472,7 +288,7 @@ export default function Home() {
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Falha ao confirmar o pagamento.");
     } finally {
-      setPaymentBusy("");
+      setPaymentBusy(false);
     }
   }
 
@@ -516,7 +332,10 @@ export default function Home() {
       setRequest(body);
       setNotice(`Pedido criado. Consultando o registro ${id}…`);
       await loadRequest(id);
-      setWizardStep(4);
+      document.getElementById("acompanhar")?.scrollIntoView({
+        behavior: prefersReducedMotion() ? "auto" : "smooth",
+        block: "start",
+      });
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Falha ao criar o pedido.");
     } finally {
@@ -587,664 +406,257 @@ export default function Home() {
     }
   }
 
-  const statusLabel = {
-    checking: "Verificando conexão",
-    connected: "Conta conectada",
-    disconnected: "Conta desconectada",
-    offline: "Servidor indisponível",
-  }[authState];
+  async function copyPix(payload: string) {
+    try {
+      await navigator.clipboard.writeText(payload);
+      setPixCopied(true);
+    } catch {
+      setError("Não foi possível copiar o código. Selecione o texto e copie manualmente.");
+    }
+  }
+
+  const hasOrder = request !== null || Boolean(activeRequestId);
+  const onboardingSteps: OnboardingStep[] = [
+    {
+      id: "connect",
+      title: "Conectar a conta",
+      description: "O servidor inicia o OAuth com PKCE S256 e guarda o token. O navegador nunca o recebe.",
+      done: connected,
+      href: `${apiUrl}/auth/login`,
+      actionLabel: "Conectar conta",
+      external: true,
+    },
+    {
+      id: "legal",
+      title: "Validar o catálogo legal",
+      description: "A versão e os hashes dos documentos vêm do catálogo oficial, lidos pelo servidor.",
+      done: Boolean(legalVersion),
+      href: "#pedido",
+      actionLabel: "Ver formulário",
+    },
+    {
+      id: "order",
+      title: "Criar o pedido",
+      description: "Escolha o cartório e as matrículas. Cada envio usa uma Idempotency-Key para não duplicar.",
+      done: hasOrder,
+      href: "#pedido",
+      actionLabel: "Ir ao formulário",
+    },
+    {
+      id: "pay",
+      title: "Pagar e acompanhar",
+      description: "Confirme o aceite e gere o PIX ou debite créditos. A API devolve o resultado em uma ação.",
+      done: pixData !== null,
+      href: "#acompanhar",
+      actionLabel: "Ir ao pagamento",
+    },
+  ];
+
+  const directory: DirectoryState = {
+    state: directoryState,
+    city: directoryCity,
+    name: directorySearch,
+    cns: directoryCns,
+    results: officeResults,
+    searched: officesSearched,
+    searching: searchingOffices,
+    error: officeError,
+    nextCursor: nextOfficeCursor,
+  };
 
   return (
-    <div className="app-shell">
-      <header className="topbar">
-        <a className="brand" href="/" aria-label="Aferisai, início">
-          <img
-            src="/aferis-logo.svg"
-            alt="AferisAI"
-            className="brand-logo-image"
-          />
-          <span className="brand-area">Partner API</span>
-        </a>
-        <div className="topbar-actions">
-          <span className={`connection-pill ${authState}`}>
-            <span className="connection-dot" />
-            {statusLabel}
-          </span>
-          {authState === "connected" ? (
-            <button className="text-button" onClick={logout} disabled={loggingOut}>
-              {loggingOut ? "Saindo…" : "Sair"}
-            </button>
-          ) : (
-            <a
-              className="button button-small"
-              href={authState === "offline" ? undefined : `${apiUrl}/auth/login`}
-              aria-disabled={authState === "offline"}
-            >
-              Conectar conta <span aria-hidden="true">↗</span>
-            </a>
-          )}
+    <div className="app">
+      <a className="skip-link" href="#conteudo">Pular para o conteúdo</a>
+
+      <header className="site-header">
+        <div className="site-header-inner">
+          <a className="brand" href="#inicio" aria-label="AferisAI Partner API, início">
+            <img src="/aferis-logo.svg" alt="" width={112} height={26} />
+            <span>Partner API</span>
+          </a>
+
+          <nav className="site-nav" aria-label="Seções da demonstração">
+            <a href="#primeiros-passos">Primeiros passos</a>
+            <a href="#pedido">Pedido</a>
+            <a href="#acompanhar">Pagamento</a>
+            <a href="#recursos">Recursos</a>
+          </nav>
+
+          <div className="site-header-actions">
+            <span className={`connection ${authState}`}>
+              <span className="connection-dot" aria-hidden="true" />
+              {statusLabels[authState]}
+            </span>
+            {authState === "connected" ? (
+              <button className="button button-ghost button-small" type="button" onClick={logout} disabled={loggingOut}>
+                {loggingOut ? "Saindo…" : "Sair"}
+              </button>
+            ) : authState !== "offline" ? (
+              <a className="button button-small" href={`${apiUrl}/auth/login`}>
+                Conectar conta <Icon name="external" />
+              </a>
+            ) : null}
+          </div>
         </div>
       </header>
 
-      <main className="page-content">
-        <section className="page-heading">
-          <div>
-            <p className="eyebrow">Área do parceiro</p>
-            <h1>Pedidos registrais</h1>
-            <p className="page-subtitle">
-              Demonstração limpa do fluxo: criação, acompanhamento e pagamento.
+      <main id="conteudo" tabIndex={-1}>
+        <section id="inicio" className="hero" aria-labelledby="hero-title">
+          <div className="hero-copy">
+            <h1 id="hero-title">Exemplo de integração com a API parceira AferisAI</h1>
+            <p className="lede">
+              O servidor deste exemplo faz o login OAuth e guarda o token. O navegador conversa só com ele. Abaixo,
+              o fluxo de pedidos registrais e a lista completa de recursos.
             </p>
+            <div className="hero-actions">
+              {connected ? (
+                <a className="button button-large" href="#pedido">
+                  Criar um pedido <Icon name="arrow" />
+                </a>
+              ) : (
+                <a className="button button-large" href={authState === "offline" ? undefined : `${apiUrl}/auth/login`} aria-disabled={authState === "offline"}>
+                  Conectar conta Aferisai <Icon name="external" />
+                </a>
+              )}
+              <a className="button button-ghost button-large" href="#recursos">Ver recursos da API</a>
+            </div>
+          </div>
+          <ArchitectureFlow />
+        </section>
+
+        <div className="notices" aria-live="polite">
+          {authState === "disconnected" && (
+            <div className="banner">
+              <Icon name="lock" />
+              <div>
+                <strong>Conecte sua conta para continuar</strong>
+                <p>O acesso é feito pelo servidor. Suas credenciais não são expostas ao navegador.</p>
+              </div>
+            </div>
+          )}
+          {authState === "offline" && (
+            <div className="banner is-danger" role="alert">
+              <Icon name="alert" />
+              <div>
+                <strong>Não foi possível conectar ao servidor</strong>
+                <p>Confira se o servidor está rodando em {apiUrl} e atualize a página.</p>
+              </div>
+            </div>
+          )}
+          {error && <div className="alert alert-error" role="alert"><Icon name="alert" />{error}</div>}
+          {notice && <div className="alert alert-success" role="status"><Icon name="check" />{notice}</div>}
+        </div>
+
+        <section id="primeiros-passos" className="section" aria-labelledby="onboarding-title">
+          <div className="section-head">
+            <h2 id="onboarding-title">Primeiros passos</h2>
+            <p>Cada etapa é marcada quando a API confirma o resultado.</p>
+          </div>
+          <Onboarding steps={onboardingSteps} />
+        </section>
+
+        <section id="pedido" className="section section-tinted" aria-labelledby="order-title">
+          <div className="section-head">
+            <h2 id="order-title">Novo pedido</h2>
+            <p>Os dados vão ao servidor, que chama a API AferisAI com o token do titular.</p>
+          </div>
+          <div className="split">
+            <div className="panel">
+              <OrderForm
+                connected={connected}
+                product={product}
+                onProductChange={setProduct}
+                selectedOffice={selectedOffice}
+                onOpenDirectory={() => {
+                  setOfficeError("");
+                  setDirectoryOpen(true);
+                }}
+                registrationText={registrationText}
+                onRegistrationChange={setRegistrationText}
+                addressContext={addressContext}
+                onAddressChange={setAddressContext}
+                pending={pending}
+                submitting={submitting}
+                onSubmit={createRequest}
+                onRetryPending={() => {
+                  if (pending) void sendPendingRequest(pending);
+                }}
+              />
+            </div>
+
+            <div id="acompanhar" className="panel" tabIndex={-1} aria-labelledby="tracking-title">
+              <h3 id="tracking-title" className="panel-title">Acompanhar e pagar</h3>
+              <OrderTracking
+                connected={connected}
+                operationId={operationId}
+                onOperationIdChange={setOperationId}
+                onLookup={() => void loadRequest()}
+                loadingRequest={loadingRequest}
+                request={request}
+                activeRequestId={activeRequestId}
+                onRefresh={() => void loadRequest(activeRequestId)}
+                quoteData={quoteData}
+                pixData={pixData}
+                paymentMethod={paymentMethod}
+                onPaymentMethodChange={setPaymentMethod}
+                payerName={payerName}
+                onPayerNameChange={setPayerName}
+                payerDocument={payerDocument}
+                onPayerDocumentChange={setPayerDocument}
+                legalConfirmed={legalConfirmed}
+                onLegalConfirmedChange={setLegalConfirmed}
+                legalVersion={legalVersion}
+                paymentBusy={paymentBusy}
+                onRunPayment={() => void runPayment()}
+                pixCopied={pixCopied}
+                onCopyPix={(payload) => void copyPix(payload)}
+              />
+            </div>
           </div>
         </section>
 
-        {authState === "disconnected" && (
-          <section className="auth-banner">
-            <span className="banner-icon">i</span>
-            <div>
-              <strong>Conecte sua conta para continuar</strong>
-              <p>O acesso é feito pelo servidor. Suas credenciais não são expostas ao navegador.</p>
-            </div>
-            <a className="button button-small" href={`${apiUrl}/auth/login`}>Conectar Aferisai <span aria-hidden="true">↗</span></a>
-          </section>
-        )}
-        {authState === "offline" && (
-          <section className="auth-banner error-banner">
-            <span className="banner-icon">!</span>
-            <div>
-              <strong>Não foi possível conectar ao servidor</strong>
-              <p>Confira se o FastAPI está rodando em {apiUrl} e atualize a página.</p>
-            </div>
-          </section>
-        )}
-
-        {error && <div className="alert alert-error" role="alert"><span>!</span>{error}</div>}
-        {notice && <div className="alert alert-success" role="status"><span>✓</span>{notice}</div>}
-
-        <nav className="wizard-stepper" aria-label="Jornada de integração">
-          {[
-            { number: 1, label: "Conectar", hint: "OAuth real" },
-            { number: 2, label: "Casos de uso", hint: "recursos" },
-            { number: 3, label: "Criar", hint: "pedido" },
-            { number: 4, label: "Acompanhar", hint: "pagamento" },
-            { number: 5, label: "Documentar", hint: "endpoints" },
-          ].map((item) => (
-            <button
-              key={item.number}
-              type="button"
-              className={`wizard-step${wizardStep === item.number ? " active" : ""}${wizardStep > item.number ? " done" : ""}`}
-              onClick={() => setWizardStep(item.number)}
-            >
-              <span className="wizard-step-icon" aria-hidden="true">
-                <svg viewBox="0 0 32 32" className="wizard-step-svg">
-                  <circle cx="16" cy="16" r="12" />
-                  {wizardStep > item.number ? (
-                    <path d="M10 16.5 14.2 20.7 22 12.5" />
-                  ) : (
-                    <text x="16" y="20.5">{item.number}</text>
-                  )}
-                </svg>
-              </span>
-              <span className="wizard-step-copy">
-                <strong>{item.label}</strong>
-                <small>{item.hint}</small>
-              </span>
-              {item.number < 5 && <span className="wizard-connector" aria-hidden="true" />}
-            </button>
-          ))}
-        </nav>
-
-        {wizardStep === 1 && (
-          <section className="wizard-panel fade-slide">
-            <div className="wizard-card">
-              <div className="wizard-card-header">
-                <span className="wizard-orb" aria-hidden="true">
-                  <svg viewBox="0 0 64 64">
-                    <circle cx="32" cy="32" r="24" className="orb-ring" />
-                    <circle cx="32" cy="32" r="10" className="orb-core" />
-                    <path d="M32 8 V56" className="orb-pulse" />
-                  </svg>
-                </span>
-                <div>
-                  <h2>Conexão real com a AferisAI</h2>
-                  <p>O segredo OAuth e o token ficam no servidor FastAPI. O navegador apenas inicia e consulta o status.</p>
-                </div>
-              </div>
-              <div className="wizard-status-row">
-                <span className={`connection-pill ${authState}`}>
-                  <span className="connection-dot" />
-                  {statusLabel}
-                </span>
-                {authState === "connected" ? (
-                  <button className="button button-small" type="button" onClick={() => setWizardStep(2)}>
-                    Avançar para casos de uso →
-                  </button>
-                ) : (
-                  <a className="button button-small" href={authState === "offline" ? undefined : `${apiUrl}/auth/login`}>
-                    Conectar Aferisai ↗
-                  </a>
-                )}
-              </div>
-              <ul className="wizard-list">
-                <li>Authorization Code + PKCE S256 no servidor.</li>
-                <li>Escopos delegados: <code>registry:submit</code>, <code>registry:read</code>, <code>registry:pay</code>.</li>
-                <li>Recuperação após refresh e tentativas pendentes.</li>
-              </ul>
-            </div>
-          </section>
-        )}
-
-        {wizardStep === 2 && (
-          <section className="wizard-panel fade-slide">
-            <div className="wizard-card">
-              <h2>Casos de uso cobertos pela demonstração</h2>
-              <p>Selecione um fluxo. Todos usam a mesma conexão delegada e as mesmas chaves de idempotência.</p>
-              <div className="use-case-grid">
-                <button type="button" className="use-case-card" onClick={() => setWizardStep(3)}>
-                  <span className="use-case-icon">📂</span>
-                  <strong>Registro por número/CNM</strong>
-                  <small>Busca o cartório no diretório, cria a ordem e cota sem chamadas duplicadas.</small>
-                </button>
-                <button type="button" className="use-case-card" onClick={() => setWizardStep(3)}>
-                  <span className="use-case-icon">📍</span>
-                  <strong>Registro por endereço</strong>
-                  <small>Disponível na API; adapte o mesmo fluxo quando aplicável.</small>
-                </button>
-                <button type="button" className="use-case-card" onClick={() => setWizardStep(4)}>
-                  <span className="use-case-icon">💳</span>
-                  <strong>Pagamento PIX ou créditos</strong>
-                  <small>Gera QR ou debita saldo com aceite legal vindo do catálogo oficial.</small>
-                </button>
-                <button type="button" className="use-case-card" onClick={() => setWizardStep(5)}>
-                  <span className="use-case-icon">📚</span>
-                  <strong>Documentação e paridade</strong>
-                  <small>Tabela de endpoints, escopos e limites publicados pela API.</small>
-                </button>
-              </div>
-              <div className="wizard-actions">
-                <button type="button" className="button button-secondary" onClick={() => setWizardStep(1)}>Voltar</button>
-                <button type="button" className="button" onClick={() => setWizardStep(3)}>Iniciar pedido</button>
-              </div>
-            </div>
-          </section>
-        )}
-
-        {wizardStep >= 3 && wizardStep <= 4 && (
-          <div className="workspace-grid">
-          <section className="panel create-panel">
-            <div className="panel-heading">
-              <div className="panel-icon icon-blue">＋</div>
-              <div>
-                <h2>Novo pedido</h2>
-                <p>Preencha os dados do registro que deseja consultar.</p>
-              </div>
-            </div>
-
-            <form className="request-form" onSubmit={createRequest}>
-              <label className="field">
-                <span className="field-label field-label-lg">Produto <span className="required">*</span></span>
-                <select value={product} onChange={(event) => setProduct(event.target.value as Product)}>
-                  <option value="visualizacao">Visualização</option>
-                  <option value="inteiro_teor_simples">Inteiro teor simples</option>
-                  <option value="inteiro_teor">Inteiro teor</option>
-                </select>
-                <span className="field-hint">Visualização aceita apenas matrícula local. CNM exige inteiro teor.</span>
-              </label>
-
-              <div className="field">
-                <span className="field-label field-label-lg">Cartório <span className="required">*</span></span>
-                {selectedOffice ? (
-                  <div className="selected-office">
-                    <span className="selected-office-mark">⌖</span>
-                    <span className="selected-office-copy">
-                      <strong>{selectedOffice.name}</strong>
-                      <small>{selectedOffice.city} / {selectedOffice.state} · CNS {selectedOffice.cns}</small>
-                    </span>
-                    {selectedOffice.cns_ambiguous && <span className="ambiguity-badge">CNS compartilhado</span>}
-                    <button type="button" className="change-office" onClick={() => setDirectoryOpen(true)}>
-                      Alterar
-                    </button>
-                  </div>
-                ) : (
-                  <button
-                    type="button"
-                    className="office-picker-trigger"
-                    onClick={() => {
-                      setOfficeError("");
-                      setDirectoryOpen(true);
-                    }}
-                  >
-                    <span className="picker-search-icon">⌕</span>
-                    <span><strong>Buscar cartório no diretório</strong><small>Selecione pelo nome, cidade ou CNS</small></span>
-                    <span className="picker-arrow">→</span>
-                  </button>
-                )}
-                <span className="field-hint">Selecione a serventia correspondente antes de informar as matrículas.</span>
-              </div>
-
-              <label className="field">
-                <span className="field-label field-label-lg">Matrículas <span className="required">*</span></span>
-                <textarea
-                  value={registrationText}
-                  onChange={(event) => setRegistrationText(event.target.value)}
-                  placeholder="Digite ou cole as matrículas, uma por linha"
-                  rows={4}
-                />
-                <span className="field-footer">
-                  <span>Até 100, do mesmo cartório e sem repetição.</span>
-                  <span className="count-chip">
-                    {registrationText.split(/[\s,;]+/).filter(Boolean).length} / 100
-                  </span>
-                </span>
-              </label>
-
-              <label className="field">
-                <span className="field-label field-label-lg">Endereço <span className="optional">Opcional</span></span>
-                <input
-                  value={addressContext}
-                  onChange={(event) => setAddressContext(event.target.value)}
-                  placeholder="Endereço informado pelo titular"
-                />
-                <span className="field-hint">Exibido quando houver uma matrícula; não comprova vínculo com o registro.</span>
-              </label>
-
-              {pending && (
-                <div className="pending-box">
-                  <div className="pending-title"><span className="pending-dot" /> Envio pendente</div>
-                  <p>A tentativa será reenviada com a mesma chave para evitar duplicidade.</p>
-                  <code>{pending.idempotencyKey}</code>
-                  <button
-                    type="button"
-                    className="button button-secondary retry-button"
-                    onClick={() => sendPendingRequest(pending)}
-                    disabled={submitting || authState !== "connected"}
-                  >
-                    {submitting ? "Enviando…" : "Reenviar tentativa"}
-                  </button>
-                </div>
-              )}
-
-              <div className="form-actions">
-                <span className="secure-note"><span aria-hidden="true">▣</span> Token protegido no servidor</span>
-                <button
-                  className="button submit-button"
-                  type="submit"
-                  disabled={submitting || authState !== "connected" || Boolean(pending)}
-                >
-                  {submitting ? "Criando pedido…" : "Criar pedido"}
-                  {!submitting && <span aria-hidden="true">→</span>}
-                </button>
-              </div>
-            </form>
-          </section>
-
-          <div className="tracking-panel-slot">
-            {showTracking ? (
-            <>
-              <button
-                type="button"
-                className="button button-secondary"
-                onClick={() => setShowTracking(false)}
-              >
-                Voltar ao resumo
-              </button>
-          <aside className="panel tracking-panel">
-            <div className="panel-heading">
-              <div className="panel-icon icon-violet">⌕</div>
-              <div>
-                <h2>Acompanhar pedido</h2>
-                <p>Consulte novamente pelo ID da operação.</p>
-              </div>
-            </div>
-
-            <form
-              className="lookup-form"
-              onSubmit={(event) => {
-                event.preventDefault();
-                void loadRequest();
-              }}
-            >
-              <label className="field">
-                <span className="field-label">ID do pedido</span>
-                <input
-                  value={operationId}
-                  onChange={(event) => setOperationId(event.target.value)}
-                  placeholder="O ID retornado na criação"
-                  autoComplete="off"
-                />
-              </label>
-              <button className="button button-secondary lookup-button" type="submit" disabled={loadingRequest || authState !== "connected"}>
-                {loadingRequest ? "Consultando…" : "Consultar pedido"}
-              </button>
-            </form>
-
-            {request ? (
-              <div className="request-result">
-                <div className="result-topline">
-                  <span className="result-label">STATUS TÉCNICO</span>
-                  <span className="status-badge"><span />{responseStatus(request)}</span>
-                </div>
-                <div className="result-id-block">
-                  <span className="result-label">IDENTIFICADOR</span>
-                  <code>{activeRequestId}</code>
-                </div>
-                <button
-                  className="refresh-link"
-                  type="button"
-                  onClick={() => void loadRequest(activeRequestId)}
-                  disabled={loadingRequest}
-                >
-                  <span aria-hidden="true">⟳</span> Atualizar status
-                </button>
-                <details className="response-details">
-                  <summary>Ver resposta completa</summary>
-                  <pre>{JSON.stringify(request, null, 2)}</pre>
-                </details>
-              </div>
-            ) : (
-              <div className="empty-result">
-                <div className="empty-illustration"><span>↗</span><i /><b /></div>
-                <strong>Nenhum pedido consultado</strong>
-                <p>Após criar um pedido, os detalhes e o status técnico aparecem aqui.</p>
-              </div>
-            )}
-
-            {request !== null && (
-              <section className="payment-flow" aria-labelledby="payment-title">
-                <div className="payment-heading">
-                  <div>
-                    <span className="result-label">PRÓXIMA ETAPA</span>
-                    <h3 id="payment-title">Cotação e pagamento</h3>
-                    <p>A API prepara a cotação e o pagamento em uma única ação segura.</p>
-                  </div>
-                  <span className="payment-step">02</span>
-                </div>
-
-                <div className="payment-step-card">
-                  <div className="payment-card-heading">
-                    <span className="payment-number">1</span>
-                    <div><strong>Resumo da ordem</strong><small>Prévia e cotação são tratadas pelo sistema</small></div>
-                  </div>
-                  {quoteData ? (
-                    <div className="quote-summary">
-                      <span className="result-label">VALOR DA COTAÇÃO</span>
-                      <strong>{formatAmount(quoteData.payable_cents)}</strong>
-                      <small>Status: {String(quoteData.status ?? "—")} · válida até {String(quoteData.expires_at ?? "—")}</small>
-                    </div>
-                  ) : (
-                    <p className="payment-hint">A cotação será preparada automaticamente ao confirmar o pagamento.</p>
-                  )}
-                </div>
-
-                <div className="payment-step-card payment-methods">
-                  <div className="payment-card-heading">
-                    <span className="payment-number">2</span>
-                    <div><strong>Dados do pagador</strong><small>Usados somente para identificar a cobrança</small></div>
-                  </div>
-                  {paymentMethod === "pix" && <div className="payer-grid">
-                    <label className="field"><span className="field-label">Nome completo <span className="required">*</span></span><input value={payerName} onChange={(event) => setPayerName(event.target.value)} autoComplete="name" /></label>
-                    <label className="field"><span className="field-label">CPF/CNPJ <span className="required">*</span></span><input value={payerDocument} onChange={(event) => setPayerDocument(event.target.value)} inputMode="numeric" autoComplete="off" /></label>
-                  </div>}
-                  <button type="button" className={`payment-method-row${paymentMethod === "pix" ? " selected" : ""}`} onClick={() => setPaymentMethod("pix")}>
-                    <span className="method-icon pix-icon">P</span>
-                    <div><strong>PIX</strong><small>QR Code e código copia e cola</small></div>
-                    <span className="method-availability">Disponível</span>
-                  </button>
-                  <button type="button" className={`payment-method-row${paymentMethod === "credits" ? " selected" : ""}`} onClick={() => setPaymentMethod("credits")}>
-                    <span className="method-icon credits-icon">C</span>
-                    <div><strong>Créditos</strong><small>Debita o saldo confirmado da conta</small></div>
-                    <span className="method-availability">Variável</span>
-                  </button>
-                  <label className="legal-confirmation">
-                    <input type="checkbox" checked={legalConfirmed} onChange={(event) => setLegalConfirmed(event.target.checked)} />
-                    <span>Confirmo o aceite dos documentos legais oficiais.</span>
-                  </label>
-                  <p className="payment-hint">A AferisAI mantém o catálogo e calcula os hashes legais automaticamente{legalVersion ? ` (versão ${legalVersion})` : "."}</p>
-                  <button
-                    className="button payment-button"
-                    type="button"
-                    onClick={() => void runPayment()}
-                    disabled={paymentBusy !== "" || authState !== "connected" || !legalVersion || !legalConfirmed}
-                  >
-                    {paymentBusy === "payment" ? "Preparando pagamento…" : pixData ? "Atualizar pagamento" : paymentMethod === "pix" ? "Confirmar e gerar PIX" : "Confirmar e debitar créditos"}
-                  </button>
-                  {pixData && (
-                    paymentMethod === "pix" ? <div className="pix-result">
-                      <div className="quote-summary"><span className="result-label">VALOR DO PIX</span><strong>{formatAmount(pixData.amount_cents)}</strong><small>Vencimento: {String(pixData.due_date ?? "—")}</small></div>
-                      {typeof pixData.qr_image_base64 === "string" && <img className="pix-qr" src={`data:image/png;base64,${pixData.qr_image_base64}`} alt="QR Code de pagamento PIX" />}
-                      {typeof pixData.pix_payload === "string" && <div className="field"><span className="field-label">PIX copia e cola</span><textarea value={pixData.pix_payload} readOnly rows={3} /><button type="button" className="refresh-link" onClick={() => { void navigator.clipboard.writeText(String(pixData.pix_payload)); setPixCopied(true); }}>{pixCopied ? "Código copiado" : "Copiar código PIX"}</button></div>}
-                    </div> : <div className="pix-result credit-result"><span className="result-label">CRÉDITOS DEBITADOS</span><strong>{formatAmount(pixData.amount_cents)}</strong><small>Pagamento confirmado. Saldo restante: {formatAmount(pixData.balance_cents)}</small></div>
-                  )}
-                </div>
-              </section>
-            )}
-
-            <div className="api-note">
-              <span className="api-note-icon">i</span>
-              <p>O status é técnico. Consulte novamente pelo ID para acompanhar as atualizações.</p>
-            </div>
-          </aside>
-            </>
-          ) : (
-          <aside className="panel tracking-panel summary-panel">
-            <div className="panel-heading">
-              <div className="panel-icon icon-violet">☰</div>
-              <div>
-                <h2>Resumo do pedido</h2>
-                <p>Confira suas escolhas antes de continuar.</p>
-              </div>
-              <button
-                type="button"
-                className="button button-small"
-                onClick={() => {
-                  setShowTracking(true);
-                  if (activeRequestId) {
-                    void loadRequest(activeRequestId);
-                  }
-                }}
-              >
-                Acompanhar pedido
-              </button>
-            </div>
-
-            <dl className="summary-choices">
-              <div>
-                <dt>Produto</dt>
-                <dd>
-                  {product === "visualizacao"
-                    ? "Visualização"
-                    : product === "inteiro_teor_simples"
-                    ? "Inteiro teor simples"
-                    : "Inteiro teor"}
-                </dd>
-              </div>
-              <div>
-                <dt>Cartório</dt>
-                <dd>{selectedOffice ? selectedOffice.name : "Não selecionado"}</dd>
-              </div>
-              <div>
-                <dt>Matrículas</dt>
-                <dd>
-                  {registrationText.split(/[\s,;]+/).filter(Boolean).length || 0}
-                </dd>
-              </div>
-              <div>
-                <dt>Endereço</dt>
-                <dd>{addressContext.trim() || "—"}</dd>
-              </div>
-              <div>
-                <dt>Legal</dt>
-                <dd>{legalVersion || "Carregando…"}</dd>
-              </div>
-            </dl>
-
-            <p className="payment-hint">
-              Use “Acompanhar pedido” para consultar status e finalizar o pagamento.
+        <section id="recursos" className="section" aria-labelledby="resources-title">
+          <div className="section-head">
+            <h2 id="resources-title">Recursos da API parceira</h2>
+            <p>
+              Recursos publicados, por domínio. <strong>Na demo</strong> indica o que este exemplo executa de ponta a
+              ponta.
             </p>
-          </aside>
-          )}
           </div>
 
-        </div>
-        )}
+          <CapabilityMap />
 
-        {wizardStep === 5 && (
-          <section className="wizard-panel fade-slide">
-            <div className="wizard-card">
-              <h2>Documentação e paridade da integração</h2>
-              <p>O demo cobre os recursos públicos usados no fluxo recomendado. Consulte a referência completa em <code>docs/partner-api-reference.md</code>.</p>
-              <table className="docs-table">
-                <thead>
-                  <tr><th>Recurso</th><th>Endpoint</th><th>Escopo</th><th>Status na demo</th></tr>
-                </thead>
-                <tbody>
-                  <tr><td>Conexão OAuth</td><td>/auth/login, /auth/status</td><td>PKCE</td><td>Implementado</td></tr>
-                  <tr><td>Busca de cartórios</td><td>GET /v1/registry-offices</td><td>público</td><td>Implementado</td></tr>
-                  <tr><td>Criar ordem</td><td>POST /api/orders</td><td>registry:submit</td><td>Implementado</td></tr>
-                  <tr><td>Consultar ordem</td><td>GET /api/orders/{"{id}"}</td><td>registry:read</td><td>Implementado</td></tr>
-                  <tr><td>Pagar PIX/créditos</td><td>POST /api/orders/{"{id}"}/payment</td><td>registry:pay, payment:credits</td><td>Implementado</td></tr>
-                  <tr><td>Catálogo legal</td><td>GET /api/orders/legal-documents</td><td>delegado</td><td>Implementado</td></tr>
-                  <tr><td>Webhooks</td><td>/v1/partner/applications/{"{id}"}/webhook-endpoint</td><td>sessão do parceiro</td><td>Documentado</td></tr>
-                  <tr><td>Créditos</td><td>GET /v1/partner/payment-options</td><td>payment:read</td><td>Planejado</td></tr>
-                </tbody>
-              </table>
-
-              <h3 className="wizard-subtitle">Catálogo completo dos endpoints Partner</h3>
-              <p className="wizard-muted">Endpoints publicados pela API parceira. A demonstração implementa diretamente o fluxo de ordens e documenta os demais recursos.</p>
-
-              <div className="endpoint-catalog">
-                {partnerEndpointGroups.map((group) => (
-                  <section key={group.title} className="endpoint-group">
-                    <h4>{group.title}</h4>
-                    <table className="docs-table">
-                      <tbody>
-                        {group.endpoints.map((endpoint) => (
-                          <tr key={group.title + endpoint.method + endpoint.path}>
-                            <td>{endpoint.method}</td>
-                            <td>{endpoint.path}</td>
-                            <td>{endpoint.summary}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </section>
-                ))}
-              </div>
-
-              <div className="wizard-actions">
-                <button type="button" className="button button-secondary" onClick={() => setWizardStep(4)}>Voltar ao acompanhamento</button>
-              </div>
-            </div>
-          </section>
-        )}
-
-        {directoryOpen && (
-          <div
-            className="dialog-backdrop"
-            onMouseDown={(event) => {
-              if (event.target === event.currentTarget) setDirectoryOpen(false);
-            }}
-          >
-            <section className="directory-dialog" role="dialog" aria-modal="true" aria-labelledby="directory-title">
-              <div className="directory-dialog-heading">
-                <div className="panel-icon icon-violet">⌕</div>
-                <div>
-                  <h2 id="directory-title">Buscar cartório</h2>
-                  <p>Filtre o diretório e selecione o cadastro correto.</p>
-                </div>
-                <button type="button" className="dialog-close" onClick={() => setDirectoryOpen(false)} aria-label="Fechar busca">×</button>
-              </div>
-
-              <form
-                className="directory-filters"
-                onSubmit={(event) => {
-                  event.preventDefault();
-                  void searchOffices();
-                }}
-              >
-                <label className="field state-filter">
-                  <span className="field-label">UF <span className="required">*</span></span>
-                  <select autoFocus value={directoryState} onChange={(event) => setDirectoryState(event.target.value)}>
-                    <option value="">Selecione</option>
-                    {brazilianStates.map((state) => <option key={state} value={state}>{state}</option>)}
-                  </select>
-                </label>
-                <label className="field city-filter">
-                  <span className="field-label">Cidade</span>
-                  <input value={directoryCity} onChange={(event) => setDirectoryCity(event.target.value)} placeholder="Ex.: Florianópolis" />
-                </label>
-                <label className="field name-filter">
-                  <span className="field-label">Nome do cartório</span>
-                  <input value={directorySearch} onChange={(event) => setDirectorySearch(event.target.value)} placeholder="Parte do nome" />
-                </label>
-                <label className="field cns-filter">
-                  <span className="field-label">CNS</span>
-                  <input inputMode="numeric" value={directoryCns} onChange={(event) => setDirectoryCns(event.target.value)} placeholder="CNS exato" />
-                </label>
-                <button className="button directory-submit" type="submit" disabled={searchingOffices}>
-                  {searchingOffices ? "Buscando…" : "Buscar cartórios"}
-                  {!searchingOffices && <span aria-hidden="true">⌕</span>}
-                </button>
-              </form>
-
-              {officeError && <div className="directory-error" role="alert">{officeError}</div>}
-
-              <div className="directory-results" aria-live="polite">
-                {!officesSearched && !searchingOffices && (
-                  <div className="directory-placeholder">
-                    <span className="placeholder-symbol">⌕</span>
-                    <strong>Escolha a UF e aplique os filtros</strong>
-                    <p>Pesquise por município, parte do nome do cartório ou CNS.</p>
-                  </div>
-                )}
-                {searchingOffices && officeResults.length === 0 && (
-                  <div className="directory-placeholder"><span className="loading-spinner" /><strong>Consultando diretório…</strong></div>
-                )}
-                {officesSearched && officeResults.length === 0 && !searchingOffices && (
-                  <div className="directory-placeholder">
-                    <strong>Nenhum cartório encontrado</strong>
-                    <p>Revise a UF e os filtros ou tente um nome mais amplo.</p>
-                  </div>
-                )}
-                {officeResults.map((office) => (
-                  <button key={office.id} type="button" className="office-result" onClick={() => chooseOffice(office)}>
-                    <span className="office-result-mark">⌖</span>
-                    <span className="office-result-content">
-                      <span className="office-result-title">
-                        <strong>{office.name}</strong>
-                        {office.cns_ambiguous && <span className="ambiguity-badge">CNS compartilhado</span>}
-                      </span>
-                      <span className="office-result-meta">{office.city} / {office.state} · CNS {office.cns}{office.number ? ` · nº ${office.number}` : ""}</span>
-                      {office.product_history && office.product_history.length > 0 && (
-                        <span className="office-history">Histórico de disponibilidade registrado para {office.product_history.length} produto(s)</span>
-                      )}
-                    </span>
-                    <span className="office-select-label">Selecionar <span aria-hidden="true">→</span></span>
-                  </button>
-                ))}
-              </div>
-
-              <div className="directory-dialog-footer">
-                <p>O diretório é histórico: disponibilidade e médias não confirmam serviço nem preço vigente.</p>
-                {nextOfficeCursor && (
-                  <button
-                    type="button"
-                    className="button button-secondary load-more-button"
-                    onClick={() => void searchOffices(nextOfficeCursor, true)}
-                    disabled={searchingOffices}
-                  >
-                    {searchingOffices ? "Carregando…" : "Carregar mais"}
-                  </button>
-                )}
-              </div>
-            </section>
+          <div className="sequence">
+            <h3>Sequência executada pela demo</h3>
+            <p>O navegador chama somente as rotas do servidor de exemplo. Ele faz as chamadas à API AferisAI.</p>
+            <pre aria-label="Sequência de chamadas"><code>{`GET  /auth/status                  conta conectada?
+GET  /api/registry-offices         escolher o cartório
+POST /api/orders                   criar o pedido (Idempotency-Key)
+GET  /api/orders/{id}              status, cotação e PIX
+POST /api/orders/{id}/payment      pagar com aceite legal`}</code></pre>
           </div>
-        )}
-
-        <footer className="page-footer">
-          <span>Exemplo de integração · Aferisai Partner API</span>
-          <span>Ambiente: <b>{apiUrl}</b></span>
-        </footer>
+        </section>
       </main>
+
+      <footer className="site-footer">
+        <p>Exemplo de integração · Aferisai Partner API</p>
+        <p>Ambiente da API: <code>{apiUrl}</code></p>
+      </footer>
+
+      {directoryOpen && (
+        <DirectoryDialog
+          state={directory}
+          onChange={(patch) => {
+            if (patch.state !== undefined) setDirectoryState(patch.state);
+            if (patch.city !== undefined) setDirectoryCity(patch.city);
+            if (patch.name !== undefined) setDirectorySearch(patch.name);
+            if (patch.cns !== undefined) setDirectoryCns(patch.cns);
+          }}
+          onSearch={(cursor, append) => void searchOffices(cursor, append)}
+          onChoose={chooseOffice}
+          onClose={closeDirectory}
+        />
+      )}
     </div>
   );
 }

@@ -1,24 +1,22 @@
-import type { Metadata } from "next";
-import { EB_Garamond, Lato } from "next/font/google";
+import type { Metadata, Viewport } from "next";
+import { Inter } from "next/font/google";
 import "./globals.css";
 
-const bodyFont = Lato({
+const inter = Inter({
   subsets: ["latin"],
-  weight: ["300", "400", "700"],
   display: "swap",
-  variable: "--font-body",
-});
-
-const headingFont = EB_Garamond({
-  subsets: ["latin"],
-  weight: ["400", "500", "600", "700"],
-  display: "swap",
-  variable: "--font-heading",
+  variable: "--font-inter",
 });
 
 export const metadata: Metadata = {
-  title: "Pedidos registrais | Aferisai",
-  description: "Exemplo de criação e acompanhamento de pedidos registrais Aferisai",
+  title: "Pedidos registrais | AferisAI Partner API",
+  description: "Demonstração de integração com a API parceira AferisAI: recursos, primeiros passos e pedidos registrais.",
+};
+
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
+  themeColor: "#061C3D",
 };
 
 export default function RootLayout({
@@ -27,8 +25,8 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="pt-BR">
-      <body className={`${bodyFont.variable} ${headingFont.variable}`}>{children}</body>
+    <html lang="pt-BR" className={inter.variable}>
+      <body>{children}</body>
     </html>
   );
 }
